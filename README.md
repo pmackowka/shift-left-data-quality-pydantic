@@ -1,32 +1,45 @@
-# Shift-left data quality with pydantic
+# Shift-left data quality z pydantic
 
-Validating ecommerce events **before** they reach the warehouse — one versioned pydantic
-contract guarding both a streaming and a batch pipeline on Google Cloud.
+Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
+pydantic pilnuje dwóch pipeline'ów naraz — streamingowego i batchowego — na Google Cloud.
 
-> **Status: work in progress.** The repository is built stage by stage.
-> Stage 0 (tooling skeleton) is done; contracts, generator, pipelines, Terraform and the
-> full README follow. See [`docs/adr/`](docs/adr/) for architecture decisions.
+> **Status: projekt w budowie.** Repozytorium powstaje etapami. Etap 0 (szkielet i narzędzia)
+> jest gotowy. Dalej: kontrakty danych, generator, pipeline'y, Terraform i pełne README
+> z diagramem architektury, regułami walidacji, benchmarkiem i szacunkiem kosztów.
 
-## Quick start
+## Dlaczego shift-left
+
+Zły rekord wykryty w hurtowni kosztuje wielokrotnie więcej niż ten sam rekord odrzucony
+u źródła: zdążył już zasilić raporty, modele atrybucji i decyzje zakupowe. Shift-left
+przesuwa walidację do momentu powstania zdarzenia — do kwarantanny trafia pojedynczy
+rekord z powodem odrzucenia, a nie cała partia po fakcie.
+
+## Szybki start
 
 ```bash
-make setup   # installs Python 3.12, creates .venv, syncs the uv workspace
-make check   # ruff + mypy strict + pytest — the same gate CI runs
+make setup   # instaluje Pythona 3.12, tworzy .venv, synchronizuje workspace uv
+make check   # ruff + mypy strict + pytest — dokładnie ta sama bramka, którą odpala CI
 ```
 
-Run `make help` for the full list of commands.
+Pełna lista komend: `make help`.
 
-## Repository layout
+## Struktura repozytorium
 
-| Path | Purpose |
+| Ścieżka | Do czego służy |
 | --- | --- |
-| `packages/dq-contracts/` | The data contract: pydantic models, quarantine mapping, BigQuery schema generation. Single source of truth, versioned with SemVer. |
-| `packages/dq-datagen/` | Synthetic event generator with deliberate fault injection. |
-| `apps/` | Publisher, Cloud Run ingest service, batch loader. |
-| `infra/terraform/` | Pub/Sub, BigQuery, Cloud Run, IAM — table schemas generated from the pydantic models. |
-| `tests/` | One positive and one negative test per validation rule. |
-| `docs/adr/` | Architecture decision records. |
+| `packages/dq-contracts/` | Kontrakt danych: modele pydantic, mapowanie błędów na kwarantannę, generowanie schematów BigQuery. Jedyne źródło prawdy, wersjonowane wg SemVer. |
+| `packages/dq-datagen/` | Generator syntetycznych zdarzeń z kontrolowanym wstrzykiwaniem błędów. |
+| `apps/` | Publisher, usługa ingest na Cloud Run, loader batchowy. |
+| `infra/terraform/` | Pub/Sub, BigQuery, Cloud Run, IAM. Schematy tabel generowane z modeli pydantic, nie przepisywane ręcznie. |
+| `tests/` | Test pozytywny i negatywny dla każdej reguły walidacji. |
+| `docs/adr/` | Decyzje architektoniczne i warianty odrzucone. |
 
-## License
+## Konwencje
 
-MIT — see [LICENSE](LICENSE).
+- Kod, nazwy, commity i opis repozytorium po angielsku.
+- Komentarze, docstringi i dokumentacja po polsku.
+- Każda zmiana przez branch i pull request, CI sprawdza lint, typy i testy.
+
+## Licencja
+
+MIT — zobacz [LICENSE](LICENSE).
