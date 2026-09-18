@@ -1,0 +1,18 @@
+[project]
+name = "dq-datagen"
+version = "0.1.0"
+description = "Synthetic ecommerce event generator with deliberate fault injection."
+requires-python = ">=3.12"
+dependencies = [
+    "dq-contracts",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dq_datagen"]
+
+[tool.uv.sources]
+dq-contracts = { workspace = true }
