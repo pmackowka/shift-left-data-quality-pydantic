@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Terraform - stan nigdy nie trafia do repo publicznego
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+crash.log
+override.tf
+override.tf.json
+
+# Sekrety i poswiadczenia - repo jest publiczne, zero wyjatkow
+*.json.key
+service-account*.json
+credentials*.json
+.env
+.env.*
+!.env.example
+
+# Dane lokalne generowane przez pipeline
+data/
+out/
+*.jsonl
+*.duckdb
+
+# macOS / IDE
+.DS_Store
+.idea/
+.vscode/

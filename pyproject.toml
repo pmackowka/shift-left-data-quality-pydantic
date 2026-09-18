@@ -1,0 +1,86 @@
+[project]
+name = "shift-left-dq"
+version = "0.0.0"
+description = "Shift-left data quality demo: pydantic contracts guarding a streaming and a batch pipeline."
+requires-python = ">=3.12"
+dependencies = [
+    "dq-contracts",
+    "dq-datagen",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14",
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "pytest-cov>=7.0",
+    "freezegun>=1.5",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+dq-contracts = { workspace = true }
+dq-datagen = { workspace = true }
+
+[tool.uv]
+package = false
+
+# --- ruff ------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["packages/dq-contracts/src", "packages/dq-datagen/src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "A",         # builtins shadowing
+    "C4",        # comprehensions
+    "DTZ",       # datetime bez strefy czasowej - krytyczne dla reguly "timestamp z przyszlosci"
+    "RUF",
+]
+ignore = ["RUF001", "RUF002", "RUF003"]  # polskie znaki w komentarzach i docstringach
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+# --- mypy ------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+mypy_path = ["packages/dq-contracts/src", "packages/dq-datagen/src"]
+files = ["packages", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# --- pytest ----------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "slow: testy wydajnosciowe, pomijane domyslnie w CI",
+]
+
+[tool.coverage.run]
+source = ["dq_contracts", "dq_datagen"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
