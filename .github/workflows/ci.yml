@@ -1,14 +1,31 @@
+# ============================================================================
+# CI dla projektu demonstracyjnego: sprawdza jakość, nigdy nie wdraża.
+#
+# Świadoma decyzja: brak deployu z CI. Wdrożenie wymagałoby poświadczeń do GCP
+# w sekretach repozytorium, a repozytorium jest publiczne i infrastruktura
+# istnieje tu wyłącznie jako kod Terraforma. Mniej ruchomych części, zero
+# powierzchni ataku.
+# ============================================================================
 name: CI
 
+# Kiedy workflow się uruchamia:
+#   pull_request - bramka przed scaleniem, to jest główny przypadek użycia,
+#   push do main - łapie stan po scaleniu, m.in. gdy PR był nieaktualny
+#                  względem main i scalenie wyprodukowało kod, którego nikt
+#                  nie testował w tej kombinacji.
 on:
   pull_request:
   push:
     branches: [main]
 
-# Projekt demonstracyjny: CI tylko weryfikuje jakosc, nigdy nie wdraza.
+# Zasada najmniejszych uprawnień. Domyślnie GITHUB_TOKEN dostaje szeroki zestaw
+# uprawnień do zapisu; temu workflow wystarczy odczyt kodu. Gdyby któryś krok
+# został skompromitowany przez złośliwą zależność, nie ma czym napisać do repo.
 permissions:
   contents: read
 
+# Anulowanie starszych uruchomień dla tej samej gałęzi. Po trzech pushach pod
+# rząd interesuje nas wynik ostatniego, a nie trzy równoległe przebiegi.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -19,17 +36,27 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Instaluje uv i włącza cache. Cache trzyma pobrane koła zależności między
+      # przebiegami - bez niego każdy przebieg ściąga pydantic i mypy od zera.
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
+      # --frozen zabrania uv aktualizować uv.lock. To jest cała różnica między
+      # "CI testuje to, co masz lokalnie" a "CI testuje najnowsze wersje z PyPI":
+      # bez tej flagi zielone CI mogłoby oznaczać inny zestaw wersji niż ten,
+      # na którym pracujesz. Przy niespójności lock/pyproject krok pada jawnie.
       - name: Sync workspace
         run: uv sync --all-packages --frozen
 
+      # --output-format=github zamienia błędy ruffa w adnotacje GitHuba, czyli
+      # czerwone znaczniki bezpośrednio przy linii w widoku "Files changed".
       - name: Lint (ruff)
         run: uv run ruff check --output-format=github .
 
+      # Formatowanie sprawdzamy, ale nie naprawiamy. CI, który commituje poprawki
+      # do gałęzi autora, produkuje zmiany, których nikt nie przejrzał.
       - name: Format check (ruff)
         run: uv run ruff format --check .
 
