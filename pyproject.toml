@@ -1,84 +1,156 @@
+# ============================================================================
+# Korzeń workspace'a uv. Ten plik nie jest pakietem do zainstalowania - pełni
+# dwie role naraz: spina pakiety z katalogu packages/ w jeden workspace oraz
+# trzyma konfigurację wszystkich narzędzi jakości (ruff, mypy, pytest).
+#
+# Dlaczego jedno miejsce na konfigurację narzędzi: gdyby każdy pakiet miał
+# własne ustawienia ruffa i mypy, ta sama reguła mogłaby być włączona w jednym
+# pakiecie i wyłączona w drugim. Wtedy "kod przechodzi lint" przestaje cokolwiek
+# znaczyć.
+# ============================================================================
+
 [project]
 name = "shift-left-dq"
+# Wersja korzenia jest atrapą (0.0.0) - to nie jest publikowany pakiet.
+# Prawdziwe, wersjonowane wg SemVer są packages/dq-contracts i packages/dq-datagen.
 version = "0.0.0"
 description = "Shift-left data quality demo: pydantic contracts guarding a streaming and a batch pipeline."
+# Dolna granica wersji Pythona. 3.12 z dwóch powodów: to runtime dostępny na
+# Cloud Run, a pydantic-core jest na nim zauważalnie szybszy niż na 3.11.
 requires-python = ">=3.12"
 dependencies = [
+    # Zależności runtime'owe korzenia to oba pakiety workspace'a. Dzięki temu
+    # `uv sync` instaluje je w trybie edytowalnym i testy widzą kod z dysku.
     "dq-contracts",
     "dq-datagen",
 ]
 
+# --- grupy zależności (PEP 735) --------------------------------------------
+# Narzędzia deweloperskie trzymamy poza `dependencies`, bo nie są potrzebne
+# do uruchomienia pipeline'u - tylko do jego rozwijania. Obraz kontenera na
+# Cloud Run zbuduje się bez nich, czyli będzie mniejszy i o mniejszej
+# powierzchni ataku.
 [dependency-groups]
 dev = [
-    "ruff>=0.14",
-    "mypy>=1.18",
-    "pytest>=8.4",
-    "pytest-cov>=7.0",
-    "freezegun>=1.5",
+    "ruff>=0.14",        # linter i formatter w jednym, zastępuje flake8 + isort + black
+    "mypy>=1.18",        # statyczna analiza typów
+    "pytest>=8.4",       # framework testowy
+    "pytest-cov>=7.0",   # pomiar pokrycia kodu testami
+    "freezegun>=1.5",    # zamraża czas w testach - potrzebne do reguły "timestamp z przyszłości"
 ]
 
+# --- workspace uv ----------------------------------------------------------
+# Workspace to monorepo: kilka niezależnie wersjonowanych pakietów w jednym
+# repozytorium, z jednym wspólnym plikiem uv.lock i jednym .venv.
 [tool.uv.workspace]
 members = ["packages/*"]
 
+# Tu dzieje się rzecz najważniejsza dla architektury tego projektu.
+# `workspace = true` mówi uv: rozwiąż tę zależność do kodu z dysku, nie do
+# wersji z PyPI. Dlatego nie da się mieć dwóch różnych wersji kontraktu
+# w dwóch pipeline'ach - fizycznie istnieje jedna kopia modeli.
 [tool.uv.sources]
 dq-contracts = { workspace = true }
 dq-datagen = { workspace = true }
 
 [tool.uv]
+# Korzeń nie jest budowany do wheela - to tylko kontener na workspace.
 package = false
 
-# --- ruff ------------------------------------------------------------------
+# ============================================================================
+# ruff - lint i formatowanie
+# ============================================================================
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Układ src-layout: kod pakietów żyje w src/, nie w katalogu głównym. Ruff musi
+# to wiedzieć, żeby poprawnie odróżnić importy własne od zewnętrznych przy
+# sortowaniu (reguła "I").
 src = ["packages/dq-contracts/src", "packages/dq-datagen/src", "tests"]
 
 [tool.ruff.lint]
 select = [
-    "E", "W",    # pycodestyle
-    "F",         # pyflakes
-    "I",         # isort
-    "N",         # pep8-naming
-    "UP",        # pyupgrade
-    "B",         # bugbear
-    "A",         # builtins shadowing
-    "C4",        # comprehensions
-    "DTZ",       # datetime bez strefy czasowej - krytyczne dla reguly "timestamp z przyszlosci"
-    "RUF",
+    "E", "W",    # pycodestyle: styl wg PEP 8, m.in. długość linii (E501)
+    "F",         # pyflakes: nieużywane importy i zmienne, błędy nazw
+    "I",         # isort: kolejność i grupowanie importów
+    "N",         # pep8-naming: konwencje nazw klas, funkcji, stałych
+    "UP",        # pyupgrade: wymusza składnię aktualną dla target-version
+    "B",         # bugbear: pułapki logiczne, m.in. mutowalne argumenty domyślne
+    "A",         # przesłanianie wbudowanych nazw (id, type, list) - w modelach danych łatwo o to
+    "C4",        # comprehensions: zbędne list()/dict() wokół generatorów
+    "DTZ",       # datetime bez strefy czasowej - patrz komentarz niżej
+    "RUF",       # reguły własne ruffa
 ]
-ignore = ["RUF001", "RUF002", "RUF003"]  # polskie znaki w komentarzach i docstringach
+# DTZ zasługuje na osobne zdanie: blokuje `datetime.now()` bez tz i naiwne
+# obiekty datetime. W tym projekcie to nie kosmetyka - reguła "znacznik czasu
+# z przyszłości" porównuje czas zdarzenia z teraz, a porównanie daty naiwnej
+# z datą ze strefą rzuca TypeError. Linter wyłapie to przed testem.
+
+ignore = [
+    # RUF001/002/003 zgłaszają "podejrzane" znaki Unicode w kodzie, łańcuchach
+    # i komentarzach. Polskie znaki diakrytyczne wpadają w tę regułę, a komentarze
+    # i docstringi piszemy po polsku - więc wyłączamy ją świadomie.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
 
 [tool.ruff.lint.per-file-ignores]
+# W testach `assert` jest narzędziem pracy, nie zapachem bezpieczeństwa.
 "tests/**" = ["S101"]
 
-# --- mypy ------------------------------------------------------------------
+# ============================================================================
+# mypy - statyczne typowanie
+# ============================================================================
 [tool.mypy]
 python_version = "3.12"
+# strict włącza naraz kilkanaście flag, m.in. wymóg adnotacji na każdej funkcji
+# i zakaz milczącego Any. W projekcie o kontraktach danych to naturalny wybór:
+# skoro pilnujemy typów w danych, pilnujmy ich też w kodzie, który je pilnuje.
 strict = true
+# Zgłasza kod, do którego nie da się dojść. Zwykle oznacza martwą gałąź
+# walidacji albo warunek, który zawsze jest prawdziwy.
 warn_unreachable = true
+# Plugin pydantic uczy mypy rozumieć modele: sprawdza sygnatury __init__
+# generowane dynamicznie z pól, czego sam mypy nie potrafi wydedukować.
 plugins = ["pydantic.mypy"]
 mypy_path = ["packages/dq-contracts/src", "packages/dq-datagen/src"]
 files = ["packages", "tests"]
 
 [[tool.mypy.overrides]]
+# Testy zwalniamy z obowiązku adnotowania każdej funkcji - wymóg `-> None`
+# przy każdym `def test_...` to szum bez wartości diagnostycznej.
 module = ["tests.*"]
 disallow_untyped_defs = false
 
 [tool.pydantic-mypy]
+# Zgłoś błąd, gdy ktoś przekaże do modelu pole, którego model nie zna.
+# To ta sama intencja co `extra="forbid"` w modelu, tylko egzekwowana
+# statycznie, przed uruchomieniem kodu.
 init_forbid_extra = true
+# Sprawdzaj typy argumentów przekazywanych do konstruktora modelu.
 init_typed = true
 warn_required_dynamic_aliases = true
 
-# --- pytest ----------------------------------------------------------------
+# ============================================================================
+# pytest i pomiar pokrycia
+# ============================================================================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# -q: zwięzłe wyjście.
+# --strict-markers: nieznany marker to błąd, nie ostrzeżenie - literówka
+#   w `@pytest.mark.slwo` nie przejdzie niezauważona jako test bez markera.
+# --strict-config: literówka w tej sekcji też wywali uruchomienie.
 addopts = "-q --strict-markers --strict-config"
 markers = [
-    "slow: testy wydajnosciowe, pomijane domyslnie w CI",
+    "slow: testy wydajnościowe, pomijane domyślnie w CI",
 ]
 
 [tool.coverage.run]
 source = ["dq_contracts", "dq_datagen"]
+# branch = true liczy pokrycie gałęzi, nie tylko linii. Dla walidatorów to
+# istotna różnica: linia `if value <= 0: raise ...` bywa wykonana, ale dopóki
+# nie ma testu na przypadek fałszywy, gałąź pozostaje niesprawdzona.
 branch = true
 
 [tool.coverage.report]

@@ -1,9 +1,23 @@
+# ============================================================================
+# dq-datagen - generator syntetycznych zdarzeń ecommerce.
+#
+# Osobny pakiet, a nie moduł wewnątrz dq-contracts, z dwóch powodów:
+#   1. Generator jest narzędziem deweloperskim i nie ma prawa trafić do obrazu
+#      produkcyjnego razem z kontraktem.
+#   2. Zależność idzie tylko w jedną stronę: generator wie o kontrakcie,
+#      kontrakt nie wie o generatorze. Odwrotna zależność oznaczałaby, że
+#      produkcyjny model importuje kod testowy.
+# ============================================================================
+
 [project]
 name = "dq-datagen"
 version = "0.1.0"
 description = "Synthetic ecommerce event generator with deliberate fault injection."
 requires-python = ">=3.12"
 dependencies = [
+    # Generator produkuje zarówno dane poprawne, jak i celowo zepsute. Te pierwsze
+    # muszą przechodzić walidację, więc buduje je na tych samych modelach, na
+    # których stoi pipeline - inaczej testowałby fikcję.
     "dq-contracts",
 ]
 
@@ -15,4 +29,6 @@ build-backend = "hatchling.build"
 packages = ["src/dq_datagen"]
 
 [tool.uv.sources]
+# Bez tej linii uv poszedłby szukać dq-contracts na PyPI, gdzie takiego pakietu
+# nie ma. `workspace = true` kieruje go do kodu z sąsiedniego katalogu.
 dq-contracts = { workspace = true }

@@ -1,15 +1,41 @@
+# ============================================================================
+# dq-contracts - rdzeń całego projektu.
+#
+# To jest jedyne miejsce, w którym opisany jest schemat danych. Pakiet jest
+# instalowalny i wersjonowany osobno, bo kontrakt danych ma własny cykl życia:
+# pipeline można przepisać bez zmiany kontraktu, ale zmiana kontraktu dotyka
+# każdego konsumenta naraz.
+# ============================================================================
+
 [project]
 name = "dq-contracts"
+# SemVer traktujemy tu dosłownie i to jest sedno idei kontraktu danych:
+#   PATCH - poprawka komunikatu błędu, dokumentacji, nic po stronie konsumenta,
+#   MINOR - nowe pole opcjonalne; stary producent nadal przechodzi walidację,
+#   MAJOR - nowe pole wymagane, zawężony typ, usunięte pole; konsument musi
+#           zareagować, bo dane sprzed zmiany przestają spełniać kontrakt.
+# Numer wersji jedzie w kopercie każdej wiadomości, więc po stronie hurtowni
+# widać, który kontrakt wyprodukował dany rekord.
 version = "0.1.0"
 description = "Versioned pydantic data contracts for ecommerce purchase events."
 requires-python = ">=3.12"
 dependencies = [
+    # Jedyna zależność i tak ma zostać. Ten pakiet celowo NIE zależy od google-cloud-*:
+    # warstwa domenowa nie może wiedzieć, że gdzieś w tle jest Pub/Sub czy BigQuery.
+    # Dzięki temu testy kontraktu są natychmiastowe i działają bez konta GCP,
+    # a ten sam kontrakt dałoby się użyć w pipelinie na zupełnie innej chmurze.
     "pydantic>=2.12",
 ]
 
 [build-system]
+# Hatchling zamiast setuptools: konfiguracja mieści się w kilku linijkach,
+# bez setup.py i bez MANIFEST.in.
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# Układ src-layout. Kod leży w src/dq_contracts, a nie w dq_contracts/ przy
+# korzeniu pakietu. Powód jest praktyczny: przy src-layout nie da się
+# przypadkiem zaimportować pakietu "z katalogu roboczego" zamiast z instalacji,
+# więc testy sprawdzają dokładnie to, co trafi do wheela i do obrazu kontenera.
 packages = ["src/dq_contracts"]

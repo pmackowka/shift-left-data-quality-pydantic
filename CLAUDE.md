@@ -75,18 +75,29 @@ tabeli ręcznie.
 
 ## Etapy projektu
 
-Realizacja idzie etapami, w tej kolejności, każdy kończy się działającą komendą:
+Etapy numerujemy od 1. Realizacja idzie w tej kolejności, każdy etap kończy się działającą
+komendą — jeśli czegoś nie da się uruchomić jedną komendą, etap nie jest zamknięty.
+Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy prac".
 
-1. **Etap 0 — szkielet** (gotowy): uv workspace, ruff, mypy strict, pytest, Makefile, CI.
-2. **Etap 1 — modele pydantic + testy**: `dq_contracts`, każda reguła walidacji ma test
+1. **Etap 1 — szkielet** (gotowy): uv workspace, ruff, mypy strict, pytest, Makefile, CI.
+2. **Etap 2 — modele pydantic + testy**: `dq_contracts`, każda reguła walidacji ma test
    pozytywny i negatywny.
-3. **Etap 2 — generator**: `dq_datagen`, parametryzowane wstrzykiwanie błędów, pokrywa
-   każdą regułę z etapu 1.
-4. **Etap 3 — streaming lokalnie**: emulator Pub/Sub w Dockerze, `make local-stream`.
-5. **Etap 4 — batch lokalnie**: raport OK/kwarantanna, idempotentność, benchmark 100k rekordów
+3. **Etap 3 — generator**: `dq_datagen`, parametryzowane wstrzykiwanie błędów, pokrywa
+   każdą regułę z etapu 2.
+4. **Etap 4 — streaming lokalnie**: emulator Pub/Sub w Dockerze, `make local-stream`.
+5. **Etap 5 — batch lokalnie**: raport OK/kwarantanna, idempotentność, benchmark 100k rekordów
    (`model_validate` vs `model_construct` vs `TypeAdapter`).
-6. **Etap 5 — Terraform**: kod infrastruktury łącznie z tworzeniem projektu GCP.
-7. **Etap 6 — README**: pełna dokumentacja produktowa.
+6. **Etap 6 — Terraform**: kod infrastruktury łącznie z tworzeniem projektu GCP.
+7. **Etap 7 — README**: pełna dokumentacja produktowa.
+
+### Topologia wdrożenia (docelowa, nieuruchomiona)
+
+`dq-contracts` to biblioteka wbudowana w obraz, nie osobna usługa. Usługa ingest idzie na
+Cloud Run (`europe-central2`), obraz do Artifact Registry, loader batchowy jako Cloud Run Job
+na tym samym obrazie, dane do BigQuery (`events`, `quarantine`), stan Terraforma docelowo do
+bucketa GCS z wersjonowaniem. Pierwszy `apply` jest dwuetapowy: rejestr i zasoby, potem push
+obrazu, na końcu usługa Cloud Run — bo jej definicja wskazuje na konkretny tag obrazu.
+Szczegóły i diagramy: README, sekcja „Jak wyglądałoby wdrożenie".
 
 ## Reguły walidacji do pokrycia
 
@@ -126,4 +137,11 @@ w generatorze:
   `docs/` + kebab-case) i pull request przez `gh pr create`, z opisem: co się zmienia, dlaczego,
   jak zweryfikować. Przed otwarciem PR uruchom `make check` i wklej wynik do opisu.
 - Po scaleniu: `gh pr merge --squash --delete-branch`.
+- **Komentarze piszemy gęsto, ale nierównomiernie.** W plikach konfiguracyjnych (TOML, YAML,
+  Makefile, Terraform) komentujemy praktycznie każdą decyzję, łącznie z tym, co dana opcja
+  robi — to wiedza, której nie da się odczytać z samego kodu, a projekt ma uczyć. W kodzie
+  Pythona komentujemy decyzje i mechanizmy pydantic, nie składnię języka; docstring modułu
+  wyjaśnia rolę pliku w całości, a nie parafrazuje nazwy klas.
+- W Makefile komentarze stoją NAD celem. Linia wcięta tabem trafia do shella i wypisuje się
+  na ekran przy każdym uruchomieniu.
 - Kod uruchamiaj, zanim powiesz, że działa.
