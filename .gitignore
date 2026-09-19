@@ -1,4 +1,11 @@
-# Python
+# ============================================================================
+# Repozytorium jest publiczne. Ten plik jest pierwszą, ale nie jedyną linią
+# obrony - reguły poniżej są pogrupowane według tego, co się stanie, jeśli
+# zawiodą.
+# ============================================================================
+
+# --- Python: artefakty budowania i cache ------------------------------------
+# Skutek wycieku: żaden, poza zaśmieceniem diffów plikami binarnymi.
 __pycache__/
 *.py[cod]
 .venv/
@@ -13,18 +20,32 @@ build/
 coverage.xml
 htmlcov/
 
-# Terraform - stan nigdy nie trafia do repo publicznego
+# --- Terraform --------------------------------------------------------------
+# Skutek wycieku: poważny. Plik stanu trzyma pełny obraz infrastruktury i
+# zapisuje atrybuty zasobów OTWARTYM TEKSTEM - łącznie z tym, co w konfiguracji
+# było oznaczone jako `sensitive`. Stan nigdy nie trafia do gita; w prawdziwym
+# projekcie idzie do zdalnego backendu (bucket GCS z włączonym wersjonowaniem).
+# .terraform/ to pobrane pluginy providerów, kilkaset MB na dysku.
 .terraform/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.*
+# Pliki *.tfvars zawierają wartości zmiennych: identyfikator projektu, numer
+# konta rozliczeniowego. Wyjątek to example.tfvars - szablon bez prawdziwych
+# wartości, który ma być w repo, żeby dało się projekt odtworzyć.
 *.tfvars
 !example.tfvars
 crash.log
 override.tf
 override.tf.json
 
-# Sekrety i poswiadczenia - repo jest publiczne, zero wyjatkow
+# --- Poświadczenia ----------------------------------------------------------
+# Skutek wycieku: krytyczny i nieodwracalny. Klucz konta usługi opublikowany na
+# GitHubie jest przeszukiwany przez boty w ciągu minut, a jedyną reakcją jest
+# natychmiastowe unieważnienie klucza.
+# W tym projekcie takich plików nie powinno być w ogóle: lokalnie działa ADC
+# (`gcloud auth application-default login`), a na Cloud Run tożsamość usługi.
+# Reguły poniżej to zabezpieczenie na wypadek pomyłki, nie element architektury.
 *.json.key
 service-account*.json
 credentials*.json
@@ -32,13 +53,15 @@ credentials*.json
 .env.*
 !.env.example
 
-# Dane lokalne generowane przez pipeline
+# --- Dane generowane lokalnie -----------------------------------------------
+# Skutek wycieku: dane są syntetyczne, więc nie ma ryzyka prywatności, ale plik
+# z 100 tys. zdarzeń w repo to kilkadziesiąt MB szumu w historii gita.
 data/
 out/
 *.jsonl
 *.duckdb
 
-# macOS / IDE
+# --- Śmieci systemu i edytorów ----------------------------------------------
 .DS_Store
 .idea/
 .vscode/
