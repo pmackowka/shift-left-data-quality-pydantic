@@ -3,7 +3,8 @@
 Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
 pydantic pilnuje dwóch pipeline'ów naraz — streamingowego i batchowego — na Google Cloud.
 
-> **Status: projekt w budowie.** Etap 1 z 7 gotowy (szkielet i narzędzia).
+> **Status: projekt w budowie.** Gotowe etapy 1–2 z 7: szkielet narzędzi i kontrakt danych
+> (81 testów, 100% pokrycia modeli).
 > Plan wszystkich etapów znajdziesz niżej, w sekcji [Etapy prac](#etapy-prac).
 
 ## Dlaczego shift-left
@@ -40,7 +41,7 @@ kolejny etap wchodzi do repozytorium przez tę samą bramkę jakości.
 
 **Sprawdzisz:** `make check`
 
-### Etap 2 — kontrakt danych
+### Etap 2 — kontrakt danych ✅
 
 **Co robimy:** modele pydantic opisujące zdarzenie zakupu — typy ograniczone przez
 `Annotated` i `Field`, `ConfigDict(strict=True, extra="forbid")`, walidatory pojedynczych pól
