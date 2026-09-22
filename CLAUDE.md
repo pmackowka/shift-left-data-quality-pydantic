@@ -80,8 +80,8 @@ komendą — jeśli czegoś nie da się uruchomić jedną komendą, etap nie jes
 Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy prac".
 
 1. **Etap 1 — szkielet** (gotowy): uv workspace, ruff, mypy strict, pytest, Makefile, CI.
-2. **Etap 2 — modele pydantic + testy**: `dq_contracts`, każda reguła walidacji ma test
-   pozytywny i negatywny.
+2. **Etap 2 — modele pydantic + testy** (gotowy): `dq_contracts`, każda reguła walidacji ma
+   test pozytywny i negatywny. 81 testów, 100% pokrycia.
 3. **Etap 3 — generator**: `dq_datagen`, parametryzowane wstrzykiwanie błędów, pokrywa
    każdą regułę z etapu 2.
 4. **Etap 4 — streaming lokalnie**: emulator Pub/Sub w Dockerze, `make local-stream`.
@@ -98,6 +98,17 @@ na tym samym obrazie, dane do BigQuery (`events`, `quarantine`), stan Terraforma
 bucketa GCS z wersjonowaniem. Pierwszy `apply` jest dwuetapowy: rejestr i zasoby, potem push
 obrazu, na końcu usługa Cloud Run — bo jej definicja wskazuje na konkretny tag obrazu.
 Szczegóły i diagramy: README, sekcja „Jak wyglądałoby wdrożenie".
+
+### Tryb strict: co trzeba wiedzieć, zanim napiszesz kolejny kod
+
+`PurchaseEvent` ma `strict=True`, a to znaczy co innego dla JSON-a i co innego dla obiektów
+Pythona. Ścieżka produkcyjna (Pub/Sub, pliki NDJSON) idzie przez `model_validate_json` i tam
+`Decimal`, `datetime`, `UUID` oraz `StrEnum` przyjmują tekstową reprezentację. Ścieżka
+obiektowa (`model_validate`) wymaga instancji dokładnie tych typów — łańcuch `"PLN"` dla pola
+`Currency` zostanie odrzucony z kodem `is_instance_of`.
+
+Wniosek dla kolejnych etapów: generator buduje zdarzenia z natywnych typów, pipeline czyta
+JSON. Testy kontraktu idą przez JSON, bo to odwzorowuje produkcję.
 
 ## Reguły walidacji do pokrycia
 
