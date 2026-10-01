@@ -21,6 +21,10 @@ make lint                   # ruff check
 make format                 # ruff format + autofix importów
 make typecheck              # mypy strict z pluginem pydantic
 make test                   # pytest z pokryciem, bez testów oznaczonych `slow`
+make gen                    # generator: N zdarzeń z odsetkiem błędnych ERR (domyślnie 1000 / 0.2)
+make image                  # obraz Dockera usługi ingest (dq-pipeline:local)
+make local-stream           # streaming end-to-end na emulatorze Pub/Sub, sprawdzony wyrocznią
+make local-stream-down      # sprzątanie po nieudanym local-stream (kontenery zostają do debugowania)
 make help                   # pełna lista celów
 ```
 
@@ -84,7 +88,8 @@ Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy p
    test pozytywny i negatywny. 81 testów, 100% pokrycia.
 3. **Etap 3 — generator** (gotowy): `dq_datagen`, katalog błędów z oczekiwanym powodem
    kwarantanny (wyrocznia testowa), dokładny plan błędów, `make gen`. 134 testy, 100% pokrycia.
-4. **Etap 4 — streaming lokalnie**: emulator Pub/Sub w Dockerze, `make local-stream`.
+4. **Etap 4 — streaming lokalnie** (gotowy): `apps/pipeline` (`dq_pipeline`), usługa ingest
+   w Dockerze, emulator Pub/Sub, redrive, raport DuckDB, `make local-stream` (też w CI).
 5. **Etap 5 — batch lokalnie**: raport OK/kwarantanna, idempotentność, benchmark 100k rekordów
    (`model_validate` vs `model_construct` vs `TypeAdapter`).
 6. **Etap 6 — Terraform**: kod infrastruktury łącznie z tworzeniem projektu GCP.
@@ -148,7 +153,18 @@ w generatorze:
 - Środowisko lokalne: brak Javy, więc emulator Pub/Sub idzie przez Dockera
   (`google-cloud-cli:emulators`), nie przez `gcloud components`.
 - Emulator BigQuery (`goccy/bigquery-emulator`) został rozważony i odrzucony na rzecz
-  lokalnego sinka JSONL + DuckDB; uzasadnienie trafia do ADR.
+  lokalnego sinka JSONL + DuckDB; uzasadnienie: `docs/adr/0001-*.md`.
+- **Semantyka ack/nack w ingest:** kwarantanna (także uszkodzony JSON) = 204/ack; awaria
+  sinka = 5xx/nack → retry → dead-letter → redrive na temat, NIE do kwarantanny. Nie
+  przywracaj starej wersji z README („zły JSON na dead-letter, dead-letter do kwarantanny").
+- **Emulator Pub/Sub nie przenosi serii wiadomości na dead-letter:** po ~3 nieudanych
+  rundach push staje (sprawdzone: odmowa połączenia i HTTP 500, świeża instancja;
+  pojedyncza wiadomość przechodzi). Scenariusz redrive kładzie wiadomości na DLQ wprost.
+  Emulator nie wysyła też `deliveryAttempt` i dubluje pola koperty (`messageId`/`message_id`).
+- `google-cloud-pubsub` nie ma `py.typed` — override w mypy tylko dla `google.cloud.pubsub_v1`.
+  Styk z klientem Google ma `pragma: no cover` i jest sprawdzany przez job CI `local-stream`.
+- Testy pokazują `StarletteDeprecationWarning` (TestClient na `httpx`, Starlette chce
+  `httpx2`). Przejście na `httpx2` czeka na decyzję właściciela repo — nie wyciszaj ostrzeżenia.
 
 ## Konwencje
 
