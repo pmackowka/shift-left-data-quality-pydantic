@@ -38,6 +38,7 @@ dev = [
     "pytest>=8.4",       # framework testowy
     "pytest-cov>=7.0",   # pomiar pokrycia kodu testami
     "freezegun>=1.5",    # zamraża czas w testach - potrzebne do reguły "timestamp z przyszłości"
+    "httpx>=0.28",       # klient HTTP pod spodem TestClient z FastAPI - testy usługi ingest bez serwera
 ]
 
 # --- workspace uv ----------------------------------------------------------
