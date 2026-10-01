@@ -3,8 +3,9 @@
 Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
 pydantic pilnuje dwóch pipeline'ów naraz — streamingowego i batchowego — na Google Cloud.
 
-> **Status: projekt w budowie.** Gotowe etapy 1–3 z 7: szkielet narzędzi, kontrakt danych
-> i generator danych z wstrzykiwaniem błędów (134 testy, 100% pokrycia).
+> **Status: projekt w budowie.** Gotowe etapy 1–4 z 7: szkielet narzędzi, kontrakt danych,
+> generator danych z wstrzykiwaniem błędów i streaming end-to-end na emulatorze Pub/Sub
+> (182 testy, 100% pokrycia, streaming sprawdzany w CI).
 > Plan wszystkich etapów znajdziesz niżej, w sekcji [Etapy prac](#etapy-prac).
 
 ## Dlaczego shift-left
@@ -19,6 +20,8 @@ rekord z powodem odrzucenia, a nie cała partia po fakcie.
 ```bash
 make setup   # instaluje Pythona 3.12, tworzy .venv, synchronizuje workspace uv
 make check   # ruff + mypy strict + pytest — dokładnie ta sama bramka, którą odpala CI
+make gen            # 1000 zdarzeń, 20% celowo zepsutych, do data/events.jsonl
+make local-stream   # streaming end-to-end na emulatorze Pub/Sub (wymaga Dockera)
 ```
 
 Pełna lista komend: `make help`.
@@ -91,7 +94,7 @@ Jedno zastrzeżenie wynika z natury reguły, nie z implementacji: błąd `future
 
 **Sprawdzisz:** `make gen N=1000 ERR=0.2`
 
-### Etap 4 — streaming lokalnie
+### Etap 4 — streaming lokalnie ✅
 
 **Co robimy:** emulator Pub/Sub w Dockerze, publisher walidujący zdarzenia przed wysłaniem,
 subskrypcja push do lokalnej usługi ingest (odpowiednik Cloud Run), walidacja po odbiorze,
@@ -100,6 +103,42 @@ temat dead-letter dla wiadomości, których nie da się przetworzyć.
 **Co to dodaje:** dowód, że cały pipeline działa bez konta GCP i bez wydawania złotówki —
 tym samym kodem ścieżki biznesowej, który potem pójdzie do chmury. Pokazuje też, po co
 walidować dwa razy: producent nie zaśmieca tematu, konsument nie ufa producentowi.
+
+**Jak to działa:** `make local-stream` stawia emulator Pub/Sub i obraz usługi ingest
+(ten sam `Dockerfile`, który poszedłby na Cloud Run), tworzy temat, subskrypcję push
+z polityką dead-letter i odgrywa trzy scenariusze:
+
+1. **Producent shift-left** waliduje przed publikacją — złe rekordy zostają u źródła
+   (`stage=source`), na temat idą wyłącznie poprawne.
+2. **Producent legacy** publikuje bez walidacji — te same rodzaje błędów łapie dopiero
+   usługa ingest (`stage=ingest`).
+3. **Redrive** — wiadomości z tematu dead-letter wracają na temat główny i zostają przyjęte.
+
+Na końcu raport DuckDB na plikach JSONL jest porównywany z odpowiedzią wzorcową generatora.
+Rozjazd kończy przebieg błędem — demo jest jednocześnie testem end-to-end i działa w CI
+jako osobny job.
+
+```
+events accepted             820
+distinct transactions       820
+quarantined                 200
+  ingest  duplicate_transaction       10
+  ...                                    (8 powodów po 10)
+  source  duplicate_transaction       15
+  ...                                    (8 powodów po 15)
+OK   source quarantine
+OK   ingest quarantine
+OK   accepted events: 820
+OK   no duplicate rows: 820
+```
+
+**Ograniczenie emulatora, opisane wprost:** naturalna droga na dead-letter (usługa leży,
+Pub/Sub po 5 próbach przenosi wiadomość) w emulatorze nie działa niezawodnie. Przy serii
+wiadomości emulator wstrzymuje push po ok. 3 nieudanych rundach i nic nie trafia na
+dead-letter — sprawdzone na świeżej instancji, zarówno przy odmowie połączenia, jak i przy
+HTTP 500. Scenariusz 3 kładzie więc wiadomości na temat dead-letter wprost i weryfikuje
+mechanikę redrive. Polityka dead-letter jest skonfigurowana jak na produkcji, ale jej
+działanie potwierdziłby dopiero prawdziwy Pub/Sub.
 
 **Sprawdzisz:** `make local-stream`
 
@@ -155,17 +194,30 @@ flowchart TD
     RUN --> V2{Walidacja po odbiorze<br/>ten sam kontrakt}
     V2 -->|rekord poprawny| EV[(BigQuery: events)]
     V2 -->|błąd walidacji| QUAR
+    RUN -->|awaria zapisu: HTTP 5xx| SUB
     SUB -->|przekroczony limit prób dostarczenia| DLQ[(Pub/Sub: dead-letter topic)]
-    DLQ --> QUAR
+    DLQ -->|redrive po usunięciu awarii| TOPIC
 ```
 
 Walidacja wykonuje się dwa razy i to jest decyzja, nie przeoczenie: producent nie zaśmieca
 tematu, a konsument nie ufa producentowi. Koszt tej duplikacji mierzymy w etapie 5.
 
-Rozróżnienie kwarantanny od dead-letter: do kwarantanny trafia rekord, który **udało się
-odczytać**, ale złamał regułę biznesową — znamy powód i da się go naprawić. Na dead-letter
-trafia wiadomość, której nie dało się przetworzyć w ogóle (uszkodzony JSON, błąd usługi),
-więc Pub/Sub poddał się po ustalonej liczbie prób.
+Rozróżnienie kwarantanny od dead-letter wynika z jednego pytania: czy ponowienie może coś
+zmienić?
+
+- **Kwarantanna** — werdykt jest deterministyczny: ten sam bajt da ten sam wynik. Trafia tu
+  rekord łamiący kontrakt, a także uszkodzony JSON (`malformed_payload`). Usługa odpowiada
+  204 (ack), bo retry tylko zapchałby kolejkę. Rekord zostaje zapisany razem z powodem
+  i surowym payloadem, więc da się go naprawić i wgrać ponownie.
+- **Dead-letter** — przetwarzanie się nie udało z przyczyn technicznych (sink niedostępny,
+  usługa leży). Usługa odpowiada kodem błędu, Pub/Sub ponawia, a po wyczerpaniu prób
+  przenosi wiadomość na dead-letter. Leżą tam zwykle **poprawne** zdarzenia, dlatego
+  nie idą do kwarantanny — oznaczenie ich jako złych danych zafałszowałoby raport jakości.
+  Po usunięciu przyczyny redrive przepuszcza je jeszcze raz.
+
+To zmiana względem pierwotnego planu, w którym uszkodzony JSON szedł na dead-letter,
+a dead-letter do kwarantanny. Powód: retry deterministycznego błędu niczego nie naprawia,
+a mieszanie awarii infrastruktury z błędami danych psuje metrykę jakości.
 
 Ścieżka batchowa — ten sam kontrakt, inny tryb pracy:
 
@@ -247,7 +299,9 @@ komenda (`make destroy`), która kasuje projekt razem z zawartością, więc rac
 | --- | --- |
 | `packages/dq-contracts/` | Kontrakt danych: modele pydantic, mapowanie błędów na kwarantannę, generowanie schematów BigQuery. Jedyne źródło prawdy, wersjonowane wg SemVer. |
 | `packages/dq-datagen/` | Generator syntetycznych zdarzeń z kontrolowanym wstrzykiwaniem błędów. |
-| `apps/` | Publisher, usługa ingest na Cloud Run, loader batchowy. |
+| `apps/pipeline/` | Walidator wspólny dla wszystkich etapów, sink, usługa ingest (FastAPI), publisher, redrive, raport DuckDB. |
+| `Dockerfile`, `compose.yaml` | Obraz usługi ingest (ten sam lokalnie i na Cloud Run) oraz lokalne środowisko z emulatorem Pub/Sub. |
+| `scripts/` | Scenariusze end-to-end, np. `local_stream.py` uruchamiany przez `make local-stream`. |
 | `infra/terraform/` | Pub/Sub, BigQuery, Cloud Run, IAM. Schematy tabel generowane z modeli pydantic, nie przepisywane ręcznie. |
 | `tests/` | Test pozytywny i negatywny dla każdej reguły walidacji. |
 | `docs/adr/` | Decyzje architektoniczne i warianty odrzucone. |
