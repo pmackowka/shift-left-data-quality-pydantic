@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # .PHONY = te nazwy nie są plikami na dysku. Gdyby w repo pojawił się plik
 # o nazwie `test`, make uznałby cel za aktualny i nie zrobiłby nic.
-.PHONY: help setup lint format typecheck test check gen clean
+.PHONY: help setup lint format typecheck test check gen image clean
 
 # Help generuje się sam z komentarzy `## ...` przy celach. Dzięki temu nie
 # istnieje druga, ręcznie utrzymywana lista celów, która rozjechałaby się
@@ -81,6 +81,11 @@ OUT ?= data/events.jsonl
 # Podsumowanie (liczba rekordów na rodzaj błędu) idzie na stderr, dane do pliku.
 gen: ## Generuje N zdarzeń z odsetkiem błędnych ERR do OUT (NDJSON), np. make gen N=1000 ERR=0.2
 	uv run dq-gen --count $(N) --error-rate $(ERR) --seed $(SEED) --output $(OUT)
+
+# Obraz pipeline'u - ten sam, który poszedłby do Artifact Registry i na Cloud Run.
+# Tag `local`, bo lokalny build nie ma numeru wersji; w chmurze tagiem byłby SHA commita.
+image: ## Buduje obraz Dockera usługi ingest (dq-pipeline:local)
+	docker build -t dq-pipeline:local .
 
 # -prune zatrzymuje schodzenie w głąb usuwanego katalogu, a `+` grupuje ścieżki
 # w jedno wywołanie rm zamiast jednego wywołania na każdy katalog.

@@ -1,0 +1,18 @@
+# Kontekst budowania obrazu. Wszystko, co tu wymienione, nie jest wysyłane do
+# demona Dockera - build jest szybszy, a do obrazu nie trafi nic przypadkowego.
+
+# Środowisko lokalne: .venv z macOS i tak nie zadziałałoby w Linuksie.
+.venv/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# Dane i historia repozytorium nie są potrzebne do zbudowania usługi.
+data/
+.git/
+.github/
+docs/
+tests/
+infra/

@@ -20,7 +20,22 @@ dependencies = [
     # Celowo BRAK dq-datagen. Generator to narzędzie deweloperskie i nie ma prawa
     # trafić do obrazu produkcyjnego; pipeline czyta pliki NDJSON, nie woła generatora.
     "dq-contracts",
+    # Usługa ingest: FastAPI waliduje kopertę Pub/Sub tym samym pydantic, którym
+    # stoi kontrakt, więc całe wejście HTTP jest opisane modelami, a nie ręcznym
+    # parsowaniem słownika.
+    "fastapi>=0.142",
+    # Serwer ASGI. Cloud Run uruchamia kontener i wysyła ruch na port z $PORT -
+    # uvicorn jest tym, co na tym porcie słucha.
+    "uvicorn>=0.54",
+    # Konfiguracja z zmiennych środowiskowych. Cloud Run konfiguruje kontener
+    # wyłącznie przez env, a pydantic-settings daje temu walidację typów - literówka
+    # w zmiennej kończy start usługi błędem zamiast cichej wartości domyślnej.
+    "pydantic-settings>=2.15",
 ]
+
+[project.scripts]
+# Polecenie startowe obrazu usługi ingest (CMD w Dockerfile).
+dq-ingest = "dq_pipeline.ingest:main"
 
 [build-system]
 requires = ["hatchling"]
