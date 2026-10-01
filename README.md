@@ -3,8 +3,8 @@
 Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
 pydantic pilnuje dwóch pipeline'ów naraz — streamingowego i batchowego — na Google Cloud.
 
-> **Status: projekt w budowie.** Gotowe etapy 1–2 z 7: szkielet narzędzi i kontrakt danych
-> (81 testów, 100% pokrycia modeli).
+> **Status: projekt w budowie.** Gotowe etapy 1–3 z 7: szkielet narzędzi, kontrakt danych
+> i generator danych z wstrzykiwaniem błędów (134 testy, 100% pokrycia).
 > Plan wszystkich etapów znajdziesz niżej, w sekcji [Etapy prac](#etapy-prac).
 
 ## Dlaczego shift-left
@@ -55,7 +55,7 @@ kodem, który można uruchomić i który przy złym rekordzie mówi, co konkretn
 
 **Sprawdzisz:** `make test`
 
-### Etap 3 — generator danych syntetycznych
+### Etap 3 — generator danych syntetycznych ✅
 
 **Co robimy:** parametryzowany generator zdarzeń: liczba rekordów, odsetek błędnych, rodzaje
 wstrzykiwanych błędów, ziarno losowości dla powtarzalności. Katalog błędów odpowiada
@@ -64,6 +64,30 @@ jeden do jednego liście reguł z etapu 2.
 **Co to dodaje:** możliwość pokazania kwarantanny w działaniu. Walidator, którego nikt nie
 nakarmił złymi danymi, jest wart tyle co nieuruchomiony test. Ziarno losowości sprawia, że
 ten sam parametr daje ten sam zestaw danych — bez tego benchmark z etapu 5 mierzyłby szum.
+
+**Jak to działa:** każdy rodzaj błędu w katalogu ma przypisany powód kwarantanny, którym
+kontrakt musi na niego odpowiedzieć — generator jest więc też wyrocznią testową. Liczba
+błędnych rekordów nie jest losowana rekord po rekordzie: generator układa plan, w którym
+dokładnie `N × ERR` pozycji dostaje błąd, a rodzaje rozkładają się po równo. Znaczniki czasu
+liczy od jawnego czasu odniesienia (`--reference-time`), nie od ukrytego „teraz".
+
+```
+$ make gen N=1000 ERR=0.2
+dq-gen: 1000 records -> data/events.jsonl (seed=42, reference_time=...)
+  valid                        800
+  duplicate_transaction         25
+  future_timestamp              25
+  missing_field                 25
+  non_positive_amount           25
+  type_mismatch                 25
+  unexpected_field              25
+  unsupported_currency          25
+  value_mismatch                25
+```
+
+Jedno zastrzeżenie wynika z natury reguły, nie z implementacji: błąd `future_timestamp` leży
+1–14 godzin po czasie odniesienia, więc plik zwalidowany później przestaje go zawierać.
+„Przyszłość" jest względna — dlatego reguła nie jest idempotentna w czasie.
 
 **Sprawdzisz:** `make gen N=1000 ERR=0.2`
 
