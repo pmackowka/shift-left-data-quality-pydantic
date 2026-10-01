@@ -65,3 +65,35 @@ jobs:
 
       - name: Tests
         run: uv run pytest -m "not slow" --cov --cov-report=term-missing
+
+  # Streaming end-to-end: emulator Pub/Sub + obraz usługi ingest w Dockerze, trzy
+  # scenariusze i porównanie wyniku z odpowiedzią wzorcową generatora.
+  #
+  # Osobny job, a nie krok w `quality`: trwa kilka razy dłużej (pobranie obrazu
+  # emulatora to ~1,4 GB), więc równolegle nie wydłuża bramki jakości, a jego
+  # porażka od razu mówi, że zepsuło się coś w integracji, a nie w lincie czy typach.
+  # Nie potrzebuje żadnych sekretów - emulator nie sprawdza poświadczeń.
+  local-stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --all-packages --frozen
+
+      # Runner GitHuba ma Dockera z Compose v2 - nic nie trzeba instalować.
+      - name: Streaming on the Pub/Sub emulator
+        run: make local-stream
+
+      # Po porażce kontenery zostają (tak działa make local-stream), więc logi
+      # usługi i emulatora są jeszcze dostępne. Bez tego kroku jedyną informacją
+      # byłby kod wyjścia skryptu.
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --no-color
