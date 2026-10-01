@@ -1,0 +1,33 @@
+# ============================================================================
+# dq-pipeline - kod obu pipeline'ów: walidacja, zapis, usługa ingest, publisher.
+#
+# To jest warstwa „chmurowa" z CLAUDE.md: tu wolno zależeć od GCP, w dq-contracts
+# nie. Podział chroni kontrakt przed ciągnięciem za sobą gRPC i klientów Google
+# do każdego miejsca, które chce tylko zwalidować rekord.
+#
+# Jeden pakiet zamiast osobnego na ingest, publisher i loader batchowy: wszystkie
+# trzy idą do jednego obrazu kontenera (usługa Cloud Run i Cloud Run Job różnią się
+# tylko poleceniem startowym), więc osobne pakiety dawałyby trzy pliki pyproject
+# do pilnowania bez żadnej korzyści przy wdrożeniu.
+# ============================================================================
+
+[project]
+name = "dq-pipeline"
+version = "0.1.0"
+description = "Streaming and batch pipelines enforcing the dq-contracts purchase event contract."
+requires-python = ">=3.12"
+dependencies = [
+    # Celowo BRAK dq-datagen. Generator to narzędzie deweloperskie i nie ma prawa
+    # trafić do obrazu produkcyjnego; pipeline czyta pliki NDJSON, nie woła generatora.
+    "dq-contracts",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dq_pipeline"]
+
+[tool.uv.sources]
+dq-contracts = { workspace = true }
