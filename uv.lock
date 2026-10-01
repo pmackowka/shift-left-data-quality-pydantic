@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "dq-contracts",
     "dq-datagen",
+    "dq-pipeline",
     "shift-left-dq",
 ]
 
@@ -209,6 +210,17 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.12" }]
 name = "dq-datagen"
 version = "0.1.0"
 source = { editable = "packages/dq-datagen" }
+dependencies = [
+    { name = "dq-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "dq-contracts", editable = "packages/dq-contracts" }]
+
+[[package]]
+name = "dq-pipeline"
+version = "0.1.0"
+source = { editable = "apps/pipeline" }
 dependencies = [
     { name = "dq-contracts" },
 ]
@@ -601,6 +613,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "dq-contracts" },
     { name = "dq-datagen" },
+    { name = "dq-pipeline" },
 ]
 
 [package.dev-dependencies]
@@ -616,6 +629,7 @@ dev = [
 requires-dist = [
     { name = "dq-contracts", editable = "packages/dq-contracts" },
     { name = "dq-datagen", editable = "packages/dq-datagen" },
+    { name = "dq-pipeline", editable = "apps/pipeline" },
 ]
 
 [package.metadata.requires-dev]
