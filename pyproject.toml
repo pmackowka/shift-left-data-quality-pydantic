@@ -12,7 +12,7 @@
 [project]
 name = "shift-left-dq"
 # Wersja korzenia jest atrapą (0.0.0) - to nie jest publikowany pakiet.
-# Prawdziwe, wersjonowane wg SemVer są packages/dq-contracts i packages/dq-datagen.
+# Prawdziwe, wersjonowane wg SemVer są pakiety z packages/ i apps/.
 version = "0.0.0"
 description = "Shift-left data quality demo: pydantic contracts guarding a streaming and a batch pipeline."
 # Dolna granica wersji Pythona. 3.12 z dwóch powodów: to runtime dostępny na
@@ -23,6 +23,7 @@ dependencies = [
     # `uv sync` instaluje je w trybie edytowalnym i testy widzą kod z dysku.
     "dq-contracts",
     "dq-datagen",
+    "dq-pipeline",
 ]
 
 # --- grupy zależności (PEP 735) --------------------------------------------
@@ -43,7 +44,9 @@ dev = [
 # Workspace to monorepo: kilka niezależnie wersjonowanych pakietów w jednym
 # repozytorium, z jednym wspólnym plikiem uv.lock i jednym .venv.
 [tool.uv.workspace]
-members = ["packages/*"]
+# packages/ - biblioteki bez zależności od chmury (kontrakt, generator),
+# apps/     - kod uruchamiany jako usługa lub zadanie, wolno mu zależeć od GCP.
+members = ["packages/*", "apps/*"]
 
 # Tu dzieje się rzecz najważniejsza dla architektury tego projektu.
 # `workspace = true` mówi uv: rozwiąż tę zależność do kodu z dysku, nie do
@@ -52,6 +55,7 @@ members = ["packages/*"]
 [tool.uv.sources]
 dq-contracts = { workspace = true }
 dq-datagen = { workspace = true }
+dq-pipeline = { workspace = true }
 
 [tool.uv]
 # Korzeń nie jest budowany do wheela - to tylko kontener na workspace.
@@ -66,7 +70,7 @@ target-version = "py312"
 # Układ src-layout: kod pakietów żyje w src/, nie w katalogu głównym. Ruff musi
 # to wiedzieć, żeby poprawnie odróżnić importy własne od zewnętrznych przy
 # sortowaniu (reguła "I").
-src = ["packages/dq-contracts/src", "packages/dq-datagen/src", "tests"]
+src = ["packages/dq-contracts/src", "packages/dq-datagen/src", "apps/pipeline/src", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -114,8 +118,8 @@ warn_unreachable = true
 # Plugin pydantic uczy mypy rozumieć modele: sprawdza sygnatury __init__
 # generowane dynamicznie z pól, czego sam mypy nie potrafi wydedukować.
 plugins = ["pydantic.mypy"]
-mypy_path = ["packages/dq-contracts/src", "packages/dq-datagen/src"]
-files = ["packages", "tests"]
+mypy_path = ["packages/dq-contracts/src", "packages/dq-datagen/src", "apps/pipeline/src"]
+files = ["packages", "apps", "tests"]
 
 [[tool.mypy.overrides]]
 # Testy zwalniamy z obowiązku adnotowania każdej funkcji - wymóg `-> None`
@@ -147,7 +151,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["dq_contracts", "dq_datagen"]
+source = ["dq_contracts", "dq_datagen", "dq_pipeline"]
 # branch = true liczy pokrycie gałęzi, nie tylko linii. Dla walidatorów to
 # istotna różnica: linia `if value <= 0: raise ...` bywa wykonana, ale dopóki
 # nie ma testu na przypadek fałszywy, gałąź pozostaje niesprawdzona.
