@@ -21,6 +21,13 @@ dependencies = [
     "dq-contracts",
 ]
 
+# Punkt wejścia konsoli: po `uv sync` w .venv pojawia się polecenie `dq-gen`, które
+# woła `main()` i przekazuje jego wynik jako kod wyjścia procesu. Dzięki temu Makefile
+# i CI uruchamiają generator tak samo jak każde inne narzędzie (`uv run dq-gen`),
+# bez znajomości ścieżki do modułu.
+[project.scripts]
+dq-gen = "dq_datagen.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
