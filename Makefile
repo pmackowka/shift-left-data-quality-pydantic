@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # .PHONY = te nazwy nie są plikami na dysku. Gdyby w repo pojawił się plik
 # o nazwie `test`, make uznałby cel za aktualny i nie zrobiłby nic.
-.PHONY: help setup lint format typecheck test check clean
+.PHONY: help setup lint format typecheck test check gen clean
 
 # Help generuje się sam z komentarzy `## ...` przy celach. Dzięki temu nie
 # istnieje druga, ręcznie utrzymywana lista celów, która rozjechałaby się
@@ -68,6 +68,19 @@ test: ## pytest z pokryciem, bez testów wydajnościowych
 # Kolejność jest celowa - od najszybszego do najwolniejszego, żeby literówka
 # nie czekała na wynik testów.
 check: lint typecheck test ## Pełna bramka jakości, to samo co CI
+
+# Parametry generatora. `?=` przypisuje wartość tylko wtedy, gdy zmienna nie przyszła
+# z linii poleceń ani ze środowiska - więc `make gen N=100000 ERR=0.05` nadpisuje
+# domyślne, a gołe `make gen` daje zawsze ten sam zbiór (stałe ziarno).
+N ?= 1000
+ERR ?= 0.2
+SEED ?= 42
+OUT ?= data/events.jsonl
+
+# Katalog data/ jest w .gitignore - wygenerowane dane nie trafiają do repozytorium.
+# Podsumowanie (liczba rekordów na rodzaj błędu) idzie na stderr, dane do pliku.
+gen: ## Generuje N zdarzeń z odsetkiem błędnych ERR do OUT (NDJSON), np. make gen N=1000 ERR=0.2
+	uv run dq-gen --count $(N) --error-rate $(ERR) --seed $(SEED) --output $(OUT)
 
 # -prune zatrzymuje schodzenie w głąb usuwanego katalogu, a `+` grupuje ścieżki
 # w jedno wywołanie rm zamiast jednego wywołania na każdy katalog.
