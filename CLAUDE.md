@@ -82,8 +82,8 @@ Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy p
 1. **Etap 1 — szkielet** (gotowy): uv workspace, ruff, mypy strict, pytest, Makefile, CI.
 2. **Etap 2 — modele pydantic + testy** (gotowy): `dq_contracts`, każda reguła walidacji ma
    test pozytywny i negatywny. 81 testów, 100% pokrycia.
-3. **Etap 3 — generator**: `dq_datagen`, parametryzowane wstrzykiwanie błędów, pokrywa
-   każdą regułę z etapu 2.
+3. **Etap 3 — generator** (gotowy): `dq_datagen`, katalog błędów z oczekiwanym powodem
+   kwarantanny (wyrocznia testowa), dokładny plan błędów, `make gen`. 134 testy, 100% pokrycia.
 4. **Etap 4 — streaming lokalnie**: emulator Pub/Sub w Dockerze, `make local-stream`.
 5. **Etap 5 — batch lokalnie**: raport OK/kwarantanna, idempotentność, benchmark 100k rekordów
    (`model_validate` vs `model_construct` vs `TypeAdapter`).
@@ -109,6 +109,18 @@ obiektowa (`model_validate`) wymaga instancji dokładnie tych typów — łańcu
 
 Wniosek dla kolejnych etapów: generator buduje zdarzenia z natywnych typów, pipeline czyta
 JSON. Testy kontraktu idą przez JSON, bo to odwzorowuje produkcję.
+
+### Generator: co trzeba wiedzieć przed etapami 4-5
+
+- `GeneratedRecord.fault` to odpowiedź wzorcowa: `None` = kontrakt musi przyjąć,
+  inaczej `FAULT_CATALOG[fault].expected_reason`. Raport z pipeline'u porównuj z nią.
+- Kolejność w pipelinie: najpierw walidacja schematu, dopiero potem
+  `TransactionRegistry.register` — tylko dla rekordów, które przeszły. Odwrotnie rejestr
+  zapamiętałby ID rekordu odrzuconego, a późniejszy poprawny rekord z tym ID zostałby
+  fałszywie uznany za duplikat (wzorzec: `tests/datagen/helpers.py`).
+- `future_timestamp` jest względny wobec `--reference-time`; plik walidowany później
+  niż ~1 h po wygenerowaniu traci część tych błędów. W testach podawaj czas jawnie.
+- `GeneratorConfig` jest celowo lax (wejście z CLI), kontrakt strict — nie ujednolicaj.
 
 ## Reguły walidacji do pokrycia
 
