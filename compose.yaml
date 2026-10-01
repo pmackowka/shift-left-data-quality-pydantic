@@ -1,0 +1,56 @@
+# ============================================================================
+# Lokalne środowisko streamingu: emulator Pub/Sub + usługa ingest.
+#
+# Odpowiednik produkcji: temat i subskrypcja push w Pub/Sub, usługa na Cloud Run.
+# Różnice, o których trzeba pamiętać:
+#   - emulator nie wysyła tokenu OIDC i nie sprawdza IAM,
+#   - stan emulatora żyje w pamięci kontenera - `docker compose down` go kasuje,
+#   - sink to pliki JSONL w ./data/stream zamiast tabel BigQuery (ADR 0001).
+#
+# Uruchamiane przez `make local-stream`, które dodatkowo tworzy tematy i publikuje
+# dane. Samo `docker compose up` daje tylko pustą infrastrukturę.
+# ============================================================================
+
+services:
+  pubsub:
+    # Emulator z oficjalnego obrazu gcloud. Lokalnie nie ma Javy, więc emulator
+    # przez `gcloud components` nie wchodzi w grę - obraz ma Javę w środku.
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    # --host-port=0.0.0.0: domyślnie emulator słucha tylko na localhost kontenera,
+    #   więc ani host, ani usługa ingest nie mogłyby się z nim połączyć.
+    # --project: dowolna nazwa. Emulator nie sprawdza, czy projekt istnieje.
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=local-demo
+    ports:
+      - "8085:8085"
+    # Healthcheck pozwala `docker compose up --wait` czekać, aż emulator naprawdę
+    # przyjmuje połączenia. Sam start kontenera nie wystarcza - JVM wstaje kilka sekund.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8085"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  ingest:
+    # Ten sam Dockerfile co dla Cloud Run - lokalnie testujemy obraz, który poszedłby
+    # do Artifact Registry, a nie osobną konfigurację „deweloperską".
+    build: .
+    image: dq-pipeline:local
+    environment:
+      DQ_SINK_DIR: /data/ingest
+    volumes:
+      - ./data/stream:/data
+    # Użytkownik kontenera = użytkownik hosta. Na Linuksie (CI) bind mount zachowuje
+    # właściciela z hosta, więc użytkownik 10001 z obrazu nie mógłby pisać do katalogu
+    # stworzonego przez runnera. Makefile przekazuje tu wynik `id -u` i `id -g`.
+    user: "${DQ_UID:-10001}:${DQ_GID:-10001}"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # Obraz slim nie ma curla, ale ma Pythona - healthcheck bez doinstalowywania czegokolwiek.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      pubsub:
+        condition: service_healthy

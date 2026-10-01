@@ -23,7 +23,8 @@ dependencies = [
     # `uv sync` instaluje je w trybie edytowalnym i testy widzą kod z dysku.
     "dq-contracts",
     "dq-datagen",
-    "dq-pipeline",
+    # [report] dokłada DuckDB - lokalnie raportujemy, w obrazie produkcyjnym nie.
+    "dq-pipeline[report]",
 ]
 
 # --- grupy zależności (PEP 735) --------------------------------------------
@@ -71,7 +72,7 @@ target-version = "py312"
 # Układ src-layout: kod pakietów żyje w src/, nie w katalogu głównym. Ruff musi
 # to wiedzieć, żeby poprawnie odróżnić importy własne od zewnętrznych przy
 # sortowaniu (reguła "I").
-src = ["packages/dq-contracts/src", "packages/dq-datagen/src", "apps/pipeline/src", "tests"]
+src = ["packages/dq-contracts/src", "packages/dq-datagen/src", "apps/pipeline/src", "scripts", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -120,13 +121,24 @@ warn_unreachable = true
 # generowane dynamicznie z pól, czego sam mypy nie potrafi wydedukować.
 plugins = ["pydantic.mypy"]
 mypy_path = ["packages/dq-contracts/src", "packages/dq-datagen/src", "apps/pipeline/src"]
-files = ["packages", "apps", "tests"]
+files = ["packages", "apps", "scripts", "tests"]
 
 [[tool.mypy.overrides]]
 # Testy zwalniamy z obowiązku adnotowania każdej funkcji - wymóg `-> None`
 # przy każdym `def test_...` to szum bez wartości diagnostycznej.
 module = ["tests.*"]
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# google-cloud-pubsub nie publikuje znacznika py.typed, więc mypy w trybie strict
+# odmawia analizy. Wyłączamy wymóg TYLKO dla tego modułu - reszta przestrzeni
+# `google.*` (np. api_core) typy ma i dalej jest sprawdzana. Styk z klientem jest
+# zamknięty w kilku funkcjach `dq_pipeline.pubsub`, które przypisują wynik do
+# własnych protokołów, więc `Any` nie rozlewa się po kodzie.
+# `google.cloud` sam w sobie jest pakietem przestrzeni nazw bez kodu - musi być na
+# liście, bo `from google.cloud import pubsub_v1` mypy rozwiązuje przez niego.
+module = ["google.cloud", "google.cloud.pubsub_v1", "google.cloud.pubsub_v1.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 # Zgłoś błąd, gdy ktoś przekaże do modelu pole, którego model nie zna.

@@ -31,11 +31,22 @@ dependencies = [
     # wyłącznie przez env, a pydantic-settings daje temu walidację typów - literówka
     # w zmiennej kończy start usługi błędem zamiast cichej wartości domyślnej.
     "pydantic-settings>=2.15",
+    # Oficjalny klient Pub/Sub: publisher, konfiguracja tematów i redrive z dead-letter.
+    # Ten sam klient rozmawia z emulatorem i z chmurą - przełącza go wyłącznie zmienna
+    # PUBSUB_EMULATOR_HOST, więc kod nie ma osobnej ścieżki „lokalnej".
+    "google-cloud-pubsub>=2.41",
 ]
+
+[project.optional-dependencies]
+# DuckDB tylko do raportów z plików lokalnych. Opcjonalna, bo usługa ingest na Cloud Run
+# niczego nie raportuje - obraz produkcyjny instaluje pakiet bez tego dodatku.
+report = ["duckdb>=1.5"]
 
 [project.scripts]
 # Polecenie startowe obrazu usługi ingest (CMD w Dockerfile).
 dq-ingest = "dq_pipeline.ingest:main"
+dq-pubsub = "dq_pipeline.pubsub:main"
+dq-report = "dq_pipeline.report:main"
 
 [build-system]
 requires = ["hatchling"]

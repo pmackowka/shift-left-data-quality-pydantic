@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # .PHONY = te nazwy nie są plikami na dysku. Gdyby w repo pojawił się plik
 # o nazwie `test`, make uznałby cel za aktualny i nie zrobiłby nic.
-.PHONY: help setup lint format typecheck test check gen image clean
+.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down clean
 
 # Help generuje się sam z komentarzy `## ...` przy celach. Dzięki temu nie
 # istnieje druga, ręcznie utrzymywana lista celów, która rozjechałaby się
@@ -86,6 +86,25 @@ gen: ## Generuje N zdarzeń z odsetkiem błędnych ERR do OUT (NDJSON), np. make
 # Tag `local`, bo lokalny build nie ma numeru wersji; w chmurze tagiem byłby SHA commita.
 image: ## Buduje obraz Dockera usługi ingest (dq-pipeline:local)
 	docker build -t dq-pipeline:local .
+
+# Streaming lokalnie, od zera: świeży emulator (stan Pub/Sub żyje w pamięci kontenera,
+# więc `down` go czyści), pusty katalog danych, obraz zbudowany z bieżącego kodu.
+# DQ_UID/DQ_GID: kontener ingest pisze do bind mounta jako użytkownik hosta - na Linuksie
+#   inaczej nie miałby prawa zapisu do ./data/stream.
+# PUBSUB_EMULATOR_HOST przełącza klienta Google na emulator; bez niej skrypt próbowałby
+#   połączyć się z prawdziwym Pub/Sub.
+# Środowisko zostaje sprzątnięte na końcu tylko przy sukcesie - po porażce kontenery
+# zostają, żeby dało się zajrzeć w `docker compose logs ingest`. Sprzątanie ręczne:
+# `make local-stream-down`.
+local-stream: ## Streaming end-to-end na emulatorze Pub/Sub (Docker), sprawdzony wyrocznią
+	docker compose down --volumes --remove-orphans
+	rm -rf data/stream && mkdir -p data/stream
+	DQ_UID=$$(id -u) DQ_GID=$$(id -g) docker compose up --detach --build --wait
+	PUBSUB_EMULATOR_HOST=localhost:8085 DQ_UID=$$(id -u) DQ_GID=$$(id -g) uv run python scripts/local_stream.py
+	docker compose down --volumes
+
+local-stream-down: ## Zatrzymuje i usuwa kontenery z make local-stream
+	docker compose down --volumes --remove-orphans
 
 # -prune zatrzymuje schodzenie w głąb usuwanego katalogu, a `+` grupuje ścieżki
 # w jedno wywołanie rm zamiast jednego wywołania na każdy katalog.
