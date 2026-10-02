@@ -27,6 +27,8 @@ make local-stream           # streaming end-to-end na emulatorze Pub/Sub, sprawd
 make local-stream-down      # sprzątanie po nieudanym local-stream (kontenery zostają do debugowania)
 make batch-local            # batch end-to-end: 3 loady sprawdzone wyrocznią (bez Dockera)
 make bench                  # benchmark walidacji, BENCH_N=100000; nie w CI
+make schemas                # schematy BigQuery z modeli -> infra/terraform/schemas/ (commitowane)
+make tf-validate            # Terraform fmt/init/validate z obrazu Dockera (wymaga Dockera)
 make help                   # pełna lista celów
 ```
 
@@ -94,7 +96,8 @@ Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy p
    w Dockerze, emulator Pub/Sub, redrive, raport DuckDB, `make local-stream` (też w CI).
 5. **Etap 5 — batch lokalnie** (gotowy): powtórka vs duplikat (`TransactionLedger`), loader
    `dq-batch` z idempotentnością pliku i wiersza, `make batch-local` (w CI), `make bench`.
-6. **Etap 6 — Terraform**: kod infrastruktury łącznie z tworzeniem projektu GCP.
+6. **Etap 6 — Terraform** (gotowy): `dq_contracts.bigquery` + `make schemas`, `BigQuerySink`
+   (`DQ_SINK=bigquery`), `infra/terraform/` z projektem GCP, job CI `terraform`.
 7. **Etap 7 — README**: pełna dokumentacja produktowa.
 
 ### Topologia wdrożenia (docelowa, nieuruchomiona)
@@ -163,6 +166,11 @@ w generatorze:
 - **Batch:** load = SHA-256 pliku, katalog `data/batch/loads/<sha16>/` publikowany jednym
   `os.replace`, manifest `_load.json` jako ostatni. `LocalJsonlSink` MUSI zapisywać postać
   kanoniczną (`model_dump_json()`), bo z niej liczony jest odcisk przy zasilaniu pamięci.
+- **Terraform:** nazwy zasobów Pub/Sub i tabel pilnuje `tests/test_terraform_names.py`;
+  pierwszy apply dwuetapowy przez `deploy_service`. Loadera batchowego jako Cloud Run Job
+  świadomie NIE ma - chmurowa idempotentność wymaga load joba + `MERGE`, nie `rename`.
+- **mypy i google.cloud:** importuj `import google.cloud.pubsub_v1 as pubsub_v1` (nie
+  `from google.cloud import ...`), bo otypowany google-cloud-bigquery dzieli tę przestrzeń nazw.
 - **Docker Desktop:** nigdy nie uruchamiaj go sam (`open -a Docker` wymaga zgody w
   ustawieniach). Gdy `docker info` pada - zgłoś i czekaj.
 - **Semantyka ack/nack w ingest:** kwarantanna (także uszkodzony JSON) = 204/ack; awaria
