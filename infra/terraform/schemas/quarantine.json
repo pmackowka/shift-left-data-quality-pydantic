@@ -1,0 +1,61 @@
+[
+  {
+    "name": "rejected_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "stage",
+    "type": "STRING",
+    "description": "One of: source, ingest, batch",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "reason",
+    "type": "STRING",
+    "description": "One of: malformed_payload, missing_field, unexpected_field, type_mismatch, non_positive_amount, out_of_range, unsupported_currency, future_timestamp, value_mismatch, duplicate_transaction, schema_violation",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "contract_version",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "transaction_id",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "raw_payload",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "issues",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "field_path",
+        "type": "STRING",
+        "mode": "REQUIRED"
+      },
+      {
+        "name": "error_type",
+        "type": "STRING",
+        "mode": "REQUIRED"
+      },
+      {
+        "name": "message",
+        "type": "STRING",
+        "mode": "REQUIRED"
+      },
+      {
+        "name": "input_value",
+        "type": "STRING",
+        "mode": "NULLABLE"
+      }
+    ],
+    "mode": "REPEATED"
+  }
+]

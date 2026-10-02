@@ -15,7 +15,8 @@ Podział na moduły odpowiada podziałowi odpowiedzialności:
 - `errors`     - granica między błędem schematu a błędem biznesowym,
 - `dedup`      - jedyna reguła wymagająca pamięci o innych rekordach,
 - `quarantine` - co się dzieje z rekordem, który kontraktu nie spełnił,
-- `version`    - numer wersji kontraktu, bez żadnych zależności.
+- `version`    - numer wersji kontraktu, bez żadnych zależności,
+- `bigquery`   - schematy tabel BigQuery wyprowadzone z modeli (`make schemas`).
 
 Wersja pakietu zmienia się zgodnie z SemVer; zmiana łamiąca kontrakt to major.
 Numer wersji jedzie w polu `contract_version` każdego zdarzenia, dzięki czemu
