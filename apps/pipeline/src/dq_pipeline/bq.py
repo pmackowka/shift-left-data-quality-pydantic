@@ -2,10 +2,11 @@
 
 Zapis idzie przez `insertAll` (streaming inserts): jeden wiersz na żądanie push,
 widoczny w zapytaniach po sekundach. To świadomie prostszy z dwóch interfejsów - Storage
-Write API jest tańszy przy dużym wolumenie i daje „dokładnie raz", ale wymaga strumieni,
-offsetów i protobufów. Przy skali demo różnica w koszcie to grosze, a w złożoności - rząd
-wielkości. Gdyby wolumen urósł, zmiana dotyczy tylko tego modułu, bo reszta pipeline'u
-widzi wyłącznie protokół `Sink`.
+Write API jest tańszy (wg cennika z 2026-10: pierwsze 2 TiB miesięcznie za darmo, podczas gdy
+`insertAll` płaci od pierwszego bajtu) i daje „dokładnie raz", ale wymaga strumieni, offsetów
+i protobufów. Przy skali demo różnica to ok. $0,05 na milion zdarzeń, a w złożoności - rząd
+wielkości. Zmiana dotyczy tylko tego modułu, bo reszta pipeline'u widzi wyłącznie protokół
+`Sink`. Pełne uzasadnienie: docs/adr/0004-bigquery-streaming-inserts.md.
 
 Deduplikacja ma tu trzy warstwy, każda łapie co innego:
 
