@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, assert_never
 
+import google.cloud.pubsub_v1 as pubsub_v1
 from google.api_core.exceptions import AlreadyExists, DeadlineExceeded
-from google.cloud import pubsub_v1
 
 from dq_contracts import PipelineStage
 from dq_pipeline.files import read_ndjson
