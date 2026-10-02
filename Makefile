@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # .PHONY = te nazwy nie są plikami na dysku. Gdyby w repo pojawił się plik
 # o nazwie `test`, make uznałby cel za aktualny i nie zrobiłby nic.
-.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down batch-local bench clean
+.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down batch-local bench schemas clean
 
 # Help generuje się sam z komentarzy `## ...` przy celach. Dzięki temu nie
 # istnieje druga, ręcznie utrzymywana lista celów, która rozjechałaby się
@@ -121,6 +121,12 @@ batch-local: ## Batch end-to-end: idempotentne loady NDJSON sprawdzone wyroczni�
 BENCH_N ?= 100000
 bench: ## Benchmark walidacji na BENCH_N rekordach (domyślnie 100 tys.)
 	uv run python scripts/bench.py --count $(BENCH_N)
+
+# Schematy tabel BigQuery z modeli pydantic. Wynik jest commitowany, bo Terraform czyta
+# go przez file() - a test `test_committed_schemas_are_up_to_date` (część make check
+# i CI) pada, gdy model zmienił się bez przegenerowania schematu.
+schemas: ## Generuje schematy BigQuery z modeli do infra/terraform/schemas/
+	uv run python -m dq_contracts.bigquery --out infra/terraform/schemas
 
 # -prune zatrzymuje schodzenie w głąb usuwanego katalogu, a `+` grupuje ścieżki
 # w jedno wywołanie rm zamiast jednego wywołania na każdy katalog.
