@@ -66,6 +66,11 @@ jobs:
       - name: Tests
         run: uv run pytest -m "not slow" --cov --cov-report=term-missing
 
+      # Batch end-to-end nie potrzebuje Dockera ani sieci, trwa kilka sekund - może
+      # iść w bramce jakości, zamiast w osobnym jobie jak streaming.
+      - name: Batch end to end
+        run: make batch-local
+
   # Streaming end-to-end: emulator Pub/Sub + obraz usługi ingest w Dockerze, trzy
   # scenariusze i porównanie wyniku z odpowiedzią wzorcową generatora.
   #

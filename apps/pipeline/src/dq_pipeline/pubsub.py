@@ -33,6 +33,7 @@ from google.api_core.exceptions import AlreadyExists, DeadlineExceeded
 from google.cloud import pubsub_v1
 
 from dq_contracts import PipelineStage
+from dq_pipeline.files import read_ndjson
 from dq_pipeline.sinks import LocalJsonlSink, Sink
 from dq_pipeline.validation import Accepted, RecordValidator, Rejected, Replayed
 
@@ -128,15 +129,6 @@ def publish_lines(
     for result in pending:
         result.result(timeout=_PUBLISH_TIMEOUT_S)
     return summary
-
-
-def read_ndjson(path: Path) -> Iterable[bytes]:
-    """Linie pliku NDJSON jako bajty; puste linie pomijamy jako formatowanie, nie dane."""
-    with path.open("rb") as source:
-        for raw in source:
-            line = raw.rstrip(b"\r\n")
-            if line:
-                yield line
 
 
 # --- redrive -------------------------------------------------------------------

@@ -33,6 +33,7 @@ from pathlib import Path
 
 from dq_contracts import PipelineStage
 from dq_datagen import FAULT_CATALOG, GeneratedRecord, GeneratorConfig, generate
+from dq_pipeline.files import read_ndjson
 from dq_pipeline.pubsub import (
     Topology,
     collect_dead_letters,
@@ -40,7 +41,6 @@ from dq_pipeline.pubsub import (
     google_dead_letters,
     google_send,
     publish_lines,
-    read_ndjson,
     republish,
 )
 from dq_pipeline.report import build_report, format_report
