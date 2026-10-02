@@ -25,6 +25,8 @@ make gen                    # generator: N zdarzeń z odsetkiem błędnych ERR (
 make image                  # obraz Dockera usługi ingest (dq-pipeline:local)
 make local-stream           # streaming end-to-end na emulatorze Pub/Sub, sprawdzony wyrocznią
 make local-stream-down      # sprzątanie po nieudanym local-stream (kontenery zostają do debugowania)
+make batch-local            # batch end-to-end: 3 loady sprawdzone wyrocznią (bez Dockera)
+make bench                  # benchmark walidacji, BENCH_N=100000; nie w CI
 make help                   # pełna lista celów
 ```
 
@@ -90,8 +92,8 @@ Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy p
    kwarantanny (wyrocznia testowa), dokładny plan błędów, `make gen`. 134 testy, 100% pokrycia.
 4. **Etap 4 — streaming lokalnie** (gotowy): `apps/pipeline` (`dq_pipeline`), usługa ingest
    w Dockerze, emulator Pub/Sub, redrive, raport DuckDB, `make local-stream` (też w CI).
-5. **Etap 5 — batch lokalnie**: raport OK/kwarantanna, idempotentność, benchmark 100k rekordów
-   (`model_validate` vs `model_construct` vs `TypeAdapter`).
+5. **Etap 5 — batch lokalnie** (gotowy): powtórka vs duplikat (`TransactionLedger`), loader
+   `dq-batch` z idempotentnością pliku i wiersza, `make batch-local` (w CI), `make bench`.
 6. **Etap 6 — Terraform**: kod infrastruktury łącznie z tworzeniem projektu GCP.
 7. **Etap 7 — README**: pełna dokumentacja produktowa.
 
@@ -154,6 +156,15 @@ w generatorze:
   (`google-cloud-cli:emulators`), nie przez `gcloud components`.
 - Emulator BigQuery (`goccy/bigquery-emulator`) został rozważony i odrzucony na rzecz
   lokalnego sinka JSONL + DuckDB; uzasadnienie: `docs/adr/0001-*.md`.
+- **Powtórka ≠ duplikat:** ten sam `transaction_id` z identycznym odciskiem treści
+  (BLAKE2b z `model_dump_json()`) to powtórka - bez zapisu i bez kwarantanny; z inną treścią
+  to duplikat. Pamięć żyje w `dq_pipeline.validation.TransactionLedger`, nie w kontrakcie -
+  `TransactionRegistry` z `dq-contracts` zostaje dla zgodności, pipeline go nie używa.
+- **Batch:** load = SHA-256 pliku, katalog `data/batch/loads/<sha16>/` publikowany jednym
+  `os.replace`, manifest `_load.json` jako ostatni. `LocalJsonlSink` MUSI zapisywać postać
+  kanoniczną (`model_dump_json()`), bo z niej liczony jest odcisk przy zasilaniu pamięci.
+- **Docker Desktop:** nigdy nie uruchamiaj go sam (`open -a Docker` wymaga zgody w
+  ustawieniach). Gdy `docker info` pada - zgłoś i czekaj.
 - **Semantyka ack/nack w ingest:** kwarantanna (także uszkodzony JSON) = 204/ack; awaria
   sinka = 5xx/nack → retry → dead-letter → redrive na temat, NIE do kwarantanny. Nie
   przywracaj starej wersji z README („zły JSON na dead-letter, dead-letter do kwarantanny").
