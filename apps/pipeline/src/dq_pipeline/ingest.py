@@ -8,6 +8,7 @@ jaki kod zwróci:
 | --------------------------------------- | ---- | ------------------------------------ |
 | rekord przyjęty                         | 204  | ack - wiadomość znika z subskrypcji  |
 | rekord w kwarantannie (też zły JSON)    | 204  | ack - decyzja zapadła i jest zapisana |
+| powtórka rekordu już przyjętego         | 204  | ack - nic do zapisania, zapis już jest |
 | koperta niezgodna z formatem push       | 422  | nack - ponowienie, potem dead-letter |
 | awaria zapisu (sink)                    | 500  | nack - ponowienie, potem dead-letter |
 
@@ -24,7 +25,7 @@ Lokalnie emulator tokenu nie wysyła, więc kod niczego tu nie sprawdza i sprawd
 
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, assert_never
 
 import uvicorn
 from fastapi import FastAPI, Response, status
@@ -34,7 +35,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dq_contracts import PipelineStage
 from dq_pipeline.sinks import LocalJsonlSink, Sink
-from dq_pipeline.validation import Accepted, RecordValidator
+from dq_pipeline.validation import Accepted, RecordValidator, Rejected, Replayed
 
 logger = logging.getLogger("dq_pipeline.ingest")
 
@@ -117,17 +118,23 @@ def create_app(sink: Sink, validator: RecordValidator | None = None) -> FastAPI:
     @app.post("/", status_code=status.HTTP_204_NO_CONTENT)
     def receive(envelope: PushEnvelope) -> Response:
         message = envelope.message
-        verdict = validator.validate(message.data)
-        if isinstance(verdict, Accepted):
-            sink.write_events([verdict.event])
-            outcome = "accepted"
-        else:
-            sink.write_rejected([verdict.record])
-            outcome = f"quarantined:{verdict.record.reason}"
+        # `match` po typie werdyktu z `assert_never` na końcu: mypy sprawdza, że obsłużone
+        # są wszystkie warianty `Verdict` - nowy wariant bez gałęzi to błąd typów, nie cichy 204.
+        match validator.validate(message.data):
+            case Accepted(event=event):
+                sink.write_events([event])
+                outcome = "accepted"
+            case Replayed():
+                outcome = "replayed"
+            case Rejected(record=record):
+                sink.write_rejected([record])
+                outcome = f"quarantined:{record.reason}"
+            case unreachable:
+                assert_never(unreachable)
         # Zapis do sinka PRZED odpowiedzią 204. Odwrotna kolejność (najpierw ack) gubi
         # rekord przy awarii zapisu - Pub/Sub uznałby go za dostarczony. Ta kolejność
         # daje „co najmniej raz": przy awarii po zapisie, a przed odpowiedzią, rekord
-        # przyjdzie ponownie i rejestr transakcji oznaczy go jako duplikat.
+        # przyjdzie ponownie i zostanie rozpoznany jako powtórka - bez drugiego zapisu.
         logger.info(
             "message %s attempt=%s %s",
             message.message_id,

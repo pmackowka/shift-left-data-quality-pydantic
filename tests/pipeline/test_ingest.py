@@ -79,11 +79,23 @@ def test_unreadable_or_empty_message_is_quarantined_as_malformed(
     assert _lines(sink_dir / QUARANTINE_FILE)[0]["reason"] == "malformed_payload"
 
 
-def test_redelivered_transaction_is_quarantined_as_duplicate(
+def test_redelivered_message_is_acked_without_second_write(
     client: TestClient, sink_dir: Path, valid_line: bytes
 ) -> None:
+    """Pub/Sub dostarczył drugi raz to samo - ack, jeden wiersz, zero kwarantanny."""
     client.post("/", json=envelope(valid_line, message_id="1"))
-    client.post("/", json=envelope(valid_line, message_id="2"))
+    response = client.post("/", json=envelope(valid_line, message_id="1"))
+
+    assert response.status_code == 204
+    assert len(_lines(sink_dir / EVENTS_FILE)) == 1
+    assert not (sink_dir / QUARANTINE_FILE).exists()
+
+
+def test_conflicting_transaction_is_quarantined_as_duplicate(
+    client: TestClient, sink_dir: Path, valid_line: bytes, conflicting_line: bytes
+) -> None:
+    client.post("/", json=envelope(valid_line, message_id="1"))
+    client.post("/", json=envelope(conflicting_line, message_id="2"))
 
     assert len(_lines(sink_dir / EVENTS_FILE)) == 1
     assert _lines(sink_dir / QUARANTINE_FILE)[0]["reason"] == "duplicate_transaction"
