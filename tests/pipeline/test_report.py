@@ -11,8 +11,8 @@ from dq_pipeline.sinks import LocalJsonlSink
 from dq_pipeline.validation import Accepted, RecordValidator, Rejected
 
 
-def _fill(root: Path, valid_line: bytes) -> None:
-    """Dwa procesy jak w demo: źródło z jednym odrzutem, ingest z jednym przyjęciem i duplikatem."""
+def _fill(root: Path, valid_line: bytes, conflicting_line: bytes) -> None:
+    """Dwa procesy jak w demo: źródło z jednym odrzutem, ingest z przyjęciem i duplikatem."""
     source = RecordValidator(PipelineStage.SOURCE)
     verdict = source.validate(b"{oops")
     assert isinstance(verdict, Rejected)
@@ -20,16 +20,18 @@ def _fill(root: Path, valid_line: bytes) -> None:
 
     ingest = RecordValidator(PipelineStage.INGEST)
     sink = LocalJsonlSink(root / "ingest")
-    for _ in range(2):
-        result = ingest.validate(valid_line)
-        if isinstance(result, Accepted):
-            sink.write_events([result.event])
-        else:
-            sink.write_rejected([result.record])
+    accepted = ingest.validate(valid_line)
+    duplicate = ingest.validate(conflicting_line)
+    assert isinstance(accepted, Accepted)
+    assert isinstance(duplicate, Rejected)
+    sink.write_events([accepted.event])
+    sink.write_rejected([duplicate.record])
 
 
-def test_report_counts_events_and_quarantine_by_stage(tmp_path: Path, valid_line: bytes) -> None:
-    _fill(tmp_path, valid_line)
+def test_report_counts_events_and_quarantine_by_stage(
+    tmp_path: Path, valid_line: bytes, conflicting_line: bytes
+) -> None:
+    _fill(tmp_path, valid_line, conflicting_line)
 
     report = build_report(tmp_path)
 
@@ -45,19 +47,22 @@ def test_empty_directory_gives_zeros_not_an_error(tmp_path: Path) -> None:
 
 
 def test_nested_quarantine_columns_do_not_break_the_query(
-    tmp_path: Path, valid_line: bytes
+    tmp_path: Path, valid_line: bytes, conflicting_line: bytes
 ) -> None:
     """Rekord kwarantanny ma zagnieżdżoną listę `issues`; raport czyta tylko swoje kolumny."""
-    _fill(tmp_path, valid_line)
+    _fill(tmp_path, valid_line, conflicting_line)
     line = (tmp_path / "source" / "quarantine.jsonl").read_text().splitlines()[0]
     assert isinstance(json.loads(line)["issues"], list)
     assert build_report(tmp_path).quarantine
 
 
 def test_format_and_cli(
-    tmp_path: Path, valid_line: bytes, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    valid_line: bytes,
+    conflicting_line: bytes,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _fill(tmp_path, valid_line)
+    _fill(tmp_path, valid_line, conflicting_line)
 
     assert main([str(tmp_path)]) == 0
     out = capsys.readouterr().out

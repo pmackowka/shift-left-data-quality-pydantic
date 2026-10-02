@@ -1,14 +1,21 @@
-"""Werdykt walidatora: przyjęcie, kwarantanna z powodem, uszkodzony JSON, duplikaty."""
+"""Werdykt walidatora: przyjęcie, kwarantanna z powodem, uszkodzony JSON, powtórki i duplikaty."""
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
 from dq_contracts import PipelineStage, QuarantineReason
 from dq_datagen import FAULT_CATALOG, GeneratorConfig, generate
-from dq_pipeline.validation import Accepted, RecordValidator, Rejected
+from dq_pipeline.validation import (
+    Accepted,
+    RecordValidator,
+    Rejected,
+    Replayed,
+    TransactionLedger,
+    fingerprint,
+)
 
 
 def test_valid_record_is_accepted(valid_line: bytes) -> None:
@@ -51,14 +58,53 @@ def test_json_that_is_not_an_object_is_a_type_mismatch() -> None:
     assert verdict.record.reason is QuarantineReason.TYPE_MISMATCH
 
 
-def test_second_occurrence_of_transaction_is_a_duplicate(valid_line: bytes) -> None:
+def test_identical_record_again_is_a_replay_not_a_duplicate(valid_line: bytes) -> None:
+    """Ponowienie dostarczenia albo ponowne wgranie pliku nie jest błędem danych."""
     validator = RecordValidator(PipelineStage.INGEST)
     assert isinstance(validator.validate(valid_line), Accepted)
 
-    verdict = validator.validate(valid_line)
+    assert isinstance(validator.validate(valid_line), Replayed)
+    assert (validator.ledger.replays, validator.ledger.duplicates) == (1, 0)
+
+
+def test_same_transaction_with_different_content_is_a_duplicate(
+    valid_line: bytes, conflicting_line: bytes
+) -> None:
+    validator = RecordValidator(PipelineStage.INGEST)
+    assert isinstance(validator.validate(valid_line), Accepted)
+
+    verdict = validator.validate(conflicting_line)
     assert isinstance(verdict, Rejected)
     assert verdict.record.reason is QuarantineReason.DUPLICATE_TRANSACTION
     assert verdict.record.transaction_id == "T-PIPE-000001"
+    assert validator.ledger.duplicates == 1
+
+
+def test_replay_is_recognised_despite_different_formatting(valid_line: bytes) -> None:
+    """Odcisk liczony z postaci kanonicznej: inna strefa czasu i spacje to wciąż ten sam rekord."""
+    payload = json.loads(valid_line)
+    utc = datetime.fromisoformat(payload["event_timestamp"])
+    payload["event_timestamp"] = utc.astimezone(timezone(timedelta(hours=2))).isoformat()
+    reformatted = json.dumps(payload, indent=2).encode()
+
+    validator = RecordValidator(PipelineStage.BATCH)
+    assert isinstance(validator.validate(valid_line), Accepted)
+    assert isinstance(validator.validate(reformatted), Replayed)
+
+
+def test_seeded_ledger_remembers_earlier_runs(valid_line: bytes, conflicting_line: bytes) -> None:
+    """Pamięć zasilona z poprzedniego przebiegu: powtórka pominięta, konflikt odrzucony."""
+    first = RecordValidator(PipelineStage.BATCH)
+    accepted = first.validate(valid_line)
+    assert isinstance(accepted, Accepted)
+
+    ledger = TransactionLedger()
+    ledger.seed([(accepted.event.transaction_id, fingerprint(accepted.event.model_dump_json()))])
+    second = RecordValidator(PipelineStage.BATCH, ledger)
+
+    assert len(ledger) == 1
+    assert isinstance(second.validate(valid_line), Replayed)
+    assert isinstance(second.validate(conflicting_line), Rejected)
 
 
 def test_rejected_record_does_not_reserve_its_transaction_id(valid_line: bytes) -> None:
@@ -71,10 +117,10 @@ def test_rejected_record_does_not_reserve_its_transaction_id(valid_line: bytes) 
     assert isinstance(validator.validate(valid_line), Accepted)
 
 
-def test_concurrent_duplicates_are_accepted_exactly_once(valid_line: bytes) -> None:
-    """Ten sam rekord z wielu wątków naraz: przyjęty raz, reszta to duplikaty."""
+def test_concurrent_copies_are_accepted_exactly_once(valid_line: bytes) -> None:
+    """Ten sam rekord z wielu wątków naraz: przyjęty raz, reszta to powtórki."""
     validator = RecordValidator(PipelineStage.INGEST)
     with ThreadPoolExecutor(max_workers=16) as pool:
         verdicts = list(pool.map(validator.validate, [valid_line] * 200))
     assert sum(isinstance(v, Accepted) for v in verdicts) == 1
-    assert validator.registry.duplicate_count == 199
+    assert validator.ledger.replays == 199

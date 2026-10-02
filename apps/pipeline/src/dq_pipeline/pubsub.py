@@ -27,14 +27,14 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, assert_never
 
 from google.api_core.exceptions import AlreadyExists, DeadlineExceeded
 from google.cloud import pubsub_v1
 
 from dq_contracts import PipelineStage
 from dq_pipeline.sinks import LocalJsonlSink, Sink
-from dq_pipeline.validation import Accepted, RecordValidator
+from dq_pipeline.validation import Accepted, RecordValidator, Rejected, Replayed
 
 
 class PublishResult(Protocol):
@@ -79,6 +79,7 @@ class PublishSummary:
     """Wynik publikacji pliku: ile poszło na temat, ile zatrzymało się u źródła i dlaczego."""
 
     published: int = 0
+    replays_skipped: int = 0
     quarantined: Counter[str] = field(default_factory=Counter)
 
 
@@ -103,11 +104,21 @@ def publish_lines(
     pending: list[PublishResult] = []
     for line in lines:
         if validator is not None:
-            verdict = validator.validate(line)
-            if not isinstance(verdict, Accepted):
-                sink.write_rejected([verdict.record])
-                summary.quarantined[verdict.record.reason] += 1
-                continue
+            match validator.validate(line):
+                case Accepted():
+                    pass
+                case Replayed():
+                    # Ten sam rekord drugi raz w źródle - nie publikujemy go ponownie.
+                    # Konsument i tak rozpoznałby powtórkę, ale zbędna wiadomość to koszt
+                    # Pub/Sub i jedno żądanie do usługi więcej.
+                    summary.replays_skipped += 1
+                    continue
+                case Rejected(record=record):
+                    sink.write_rejected([record])
+                    summary.quarantined[record.reason] += 1
+                    continue
+                case unreachable:
+                    assert_never(unreachable)
         pending.append(send(line, {}))
         summary.published += 1
 
@@ -182,7 +193,7 @@ def republish(
     Kolejność kroków to cała gwarancja niezawodności: najpierw publikacja i czekanie na
     jej potwierdzenie, dopiero potem ack na dead-letter. Odwrotnie - przy awarii między
     krokami - wiadomość zniknęłaby z obu miejsc. W tej kolejności najgorszy przypadek to
-    podwójna publikacja, którą rejestr transakcji w ingest oznaczy jako duplikat.
+    podwójna publikacja, którą ingest rozpozna jako powtórkę i pominie.
 
     Atrybut `redriven` zostaje na wiadomości - w logach ingest widać, które rekordy
     przeszły przez dead-letter, bez szukania ich po identyfikatorach.

@@ -173,3 +173,7 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+# Gałąź `case unreachable: assert_never(...)` istnieje dla mypy (kontrola, że `match`
+# obsługuje każdy wariant unii), a nie do wykonania - z definicji nie da się do niej
+# wejść. Bez wykluczenia każdy wyczerpujący `match` raportowałby częściowe pokrycie.
+exclude_also = ["case unreachable:", "assert_never\\("]
