@@ -25,11 +25,19 @@ Lokalnie emulator tokenu nie wysyła, więc kod niczego tu nie sprawdza i sprawd
 
 import logging
 from pathlib import Path
-from typing import Annotated, assert_never
+from typing import Annotated, Literal, Self, assert_never
 
 import uvicorn
 from fastapi import FastAPI, Response, status
-from pydantic import AliasChoices, AwareDatetime, Base64Bytes, BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    AwareDatetime,
+    Base64Bytes,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -92,8 +100,32 @@ class IngestSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="DQ_", frozen=True)
 
+    # Lokalnie pliki JSONL, na Cloud Run BigQuery. Literal zamiast dowolnego tekstu:
+    # literówka `DQ_SINK=bigqeury` kończy start usługi błędem walidacji, zamiast po cichu
+    # przełączyć zapis na efemeryczny dysk kontenera, gdzie dane znikną przy restarcie.
+    sink: Literal["local", "bigquery"] = "local"
     sink_dir: Path = Path("data/stream/ingest")
+    bq_project: str | None = None
+    bq_dataset: str = "dq"
     port: Annotated[int, Field(gt=0, lt=65536, validation_alias=AliasChoices("PORT"))] = 8080
+
+    @model_validator(mode="after")
+    def bigquery_needs_a_project(self) -> Self:
+        """Zależność między polami: projekt jest wymagany tylko dla sinka BigQuery."""
+        if self.sink == "bigquery" and not self.bq_project:
+            msg = "DQ_BQ_PROJECT is required when DQ_SINK=bigquery"
+            raise ValueError(msg)
+        return self
+
+
+def build_sink(settings: IngestSettings) -> Sink:
+    """Sink wybrany konfiguracją. Klient BigQuery importowany tylko, gdy jest potrzebny."""
+    if settings.sink == "bigquery":
+        from dq_pipeline.bq import bigquery_sink
+
+        assert settings.bq_project is not None  # gwarantuje walidator wyżej
+        return bigquery_sink(settings.bq_project, settings.bq_dataset)
+    return LocalJsonlSink(settings.sink_dir)
 
 
 def create_app(sink: Sink, validator: RecordValidator | None = None) -> FastAPI:
@@ -147,10 +179,10 @@ def create_app(sink: Sink, validator: RecordValidator | None = None) -> FastAPI:
 
 
 def main() -> None:
-    """Punkt wejścia `dq-ingest`: konfiguracja z env, sink lokalny, serwer na $PORT."""
+    """Punkt wejścia `dq-ingest`: konfiguracja z env, sink z konfiguracji, serwer na $PORT."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = IngestSettings()
-    app = create_app(LocalJsonlSink(settings.sink_dir))
+    app = create_app(build_sink(settings))
     # host 0.0.0.0: w kontenerze 127.0.0.1 oznacza wnętrze kontenera, więc ruch
     # z zewnątrz (emulator, Cloud Run) nie dotarłby do usługi.
     uvicorn.run(app, host="0.0.0.0", port=settings.port, access_log=False)

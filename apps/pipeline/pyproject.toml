@@ -35,6 +35,8 @@ dependencies = [
     # Ten sam klient rozmawia z emulatorem i z chmurą - przełącza go wyłącznie zmienna
     # PUBSUB_EMULATOR_HOST, więc kod nie ma osobnej ścieżki „lokalnej".
     "google-cloud-pubsub>=2.41",
+    # Zapis do tabel `events` i `quarantine` z usługi ingest na Cloud Run.
+    "google-cloud-bigquery>=3.46",
 ]
 
 [project.optional-dependencies]

@@ -135,9 +135,11 @@ disallow_untyped_defs = false
 # `google.*` (np. api_core) typy ma i dalej jest sprawdzana. Styk z klientem jest
 # zamknięty w kilku funkcjach `dq_pipeline.pubsub`, które przypisują wynik do
 # własnych protokołów, więc `Any` nie rozlewa się po kodzie.
-# `google.cloud` sam w sobie jest pakietem przestrzeni nazw bez kodu - musi być na
-# liście, bo `from google.cloud import pubsub_v1` mypy rozwiązuje przez niego.
-module = ["google.cloud", "google.cloud.pubsub_v1", "google.cloud.pubsub_v1.*"]
+# Import w kodzie to `import google.cloud.pubsub_v1 as pubsub_v1`, nie `from google.cloud
+# import pubsub_v1`: przestrzeń nazw `google.cloud` zawiera też otypowany
+# google-cloud-bigquery, więc mypy ją analizuje i forma `from` szukałaby `pubsub_v1`
+# jako atrybutu otypowanego pakietu - bez skutku.
+module = ["google.cloud.pubsub_v1", "google.cloud.pubsub_v1.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
