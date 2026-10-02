@@ -1,127 +1,142 @@
 # Shift-left data quality z pydantic
 
-Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
-pydantic pilnuje dwóch pipeline'ów naraz — streamingowego i batchowego — na Google Cloud.
+[![CI](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml/badge.svg)](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml)
 
-> **Status: projekt w budowie.** Gotowe etapy 1–6 z 7: kontrakt danych, generator z wstrzykiwaniem
-> błędów, streaming na emulatorze Pub/Sub, idempotentny batch z benchmarkiem i Terraform całej
-> infrastruktury GCP (219 testów, 100% pokrycia; streaming, batch i Terraform sprawdzane w CI).
-> **Demo na GCP: niewykonane** — Terraform jest zwalidowany, ale świadomie nie został uruchomiony.
-> Plan wszystkich etapów znajdziesz niżej, w sekcji [Etapy prac](#etapy-prac).
+Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
+pydantic pilnuje dwóch pipeline'ów naraz — streamingowego (Pub/Sub → Cloud Run → BigQuery)
+i batchowego — a rekord, który kontraktu nie spełnia, trafia do kwarantanny z powodem
+odrzucenia i oryginalną treścią.
+
+> **Status:** wszystkie 7 etapów gotowe. 219 testów, 100% pokrycia; streaming, batch
+> i Terraform sprawdzane w CI przy każdym pull requeście.
+> **Demo na GCP: niewykonane.** Infrastruktura jest kompletnym, zwalidowanym kodem
+> Terraforma, ale świadomie nie została uruchomiona — nie istnieje projekt GCP ani wdrożona
+> usługa. Wszystko, co opisane niżej jako „działa", działa lokalnie i w CI.
+
+## Spis treści
+
+- [Dlaczego shift-left](#dlaczego-shift-left)
+- [Co pokazuje ten projekt](#co-pokazuje-ten-projekt)
+- [Architektura](#architektura)
+- [Uruchomienie od zera](#uruchomienie-od-zera)
+- [Kontrakt: reguły walidacji](#kontrakt-reguły-walidacji)
+- [Kwarantanna: jak wygląda odrzucony rekord](#kwarantanna-jak-wygląda-odrzucony-rekord)
+- [Powtórki, duplikaty i idempotentność](#powtórki-duplikaty-i-idempotentność)
+- [Benchmark walidacji](#benchmark-walidacji)
+- [Usługi GCP i dlaczego te](#usługi-gcp-i-dlaczego-te)
+- [Wdrożenie na GCP](#wdrożenie-na-gcp)
+- [Szacunek kosztów](#szacunek-kosztów)
+- [Teardown](#teardown)
+- [Decyzje architektoniczne](#decyzje-architektoniczne)
+- [Ograniczenia i czego nie zweryfikowano](#ograniczenia-i-czego-nie-zweryfikowano)
+- [Struktura repozytorium](#struktura-repozytorium)
+- [Historia etapów](#historia-etapów)
 
 ## Dlaczego shift-left
 
 Zły rekord wykryty w hurtowni kosztuje wielokrotnie więcej niż ten sam rekord odrzucony
-u źródła: zdążył już zasilić raporty, modele atrybucji i decyzje zakupowe. Shift-left
-przesuwa walidację do momentu powstania zdarzenia — do kwarantanny trafia pojedynczy
-rekord z powodem odrzucenia, a nie cała partia po fakcie.
+u źródła: zdążył już zasilić raporty, modele atrybucji i decyzje zakupowe. Transakcja
+z wartością niezgodną z sumą pozycji o jeden grosz przejdzie przez każdą tabelę i dashboard,
+dopóki ktoś nie zauważy, że przychód z raportu nie zgadza się z systemem finansowym.
 
-## Szybki start
+Shift-left przesuwa walidację do momentu powstania zdarzenia. Zamiast sprzątać partię po
+fakcie, pipeline odrzuca pojedynczy rekord z konkretnym powodem — a reszta płynie dalej.
+
+## Co pokazuje ten projekt
+
+- **Jedno źródło prawdy.** Modele pydantic w `packages/dq-contracts` walidują dane
+  u producenta, w usłudze ingest i w loaderze batchowym, a z tych samych modeli powstają
+  schematy tabel BigQuery. Schemat nie może się rozjechać, bo istnieje w jednym miejscu.
+- **Walidacja dwa razy, świadomie.** Producent waliduje przed publikacją (nie zaśmieca
+  tematu), konsument po odbiorze (nie ufa producentowi). Demo pokazuje oba przypadki.
+- **Kwarantanna zamiast cichych strat.** Każdy odrzucony rekord ma powód, ścieżkę pola,
+  etap pipeline'u i oryginalny payload — da się go naprawić i wgrać ponownie.
+- **Powtórka to nie duplikat.** Ponowione dostarczenie z Pub/Sub czy drugi raz wgrany plik
+  nie zawyżają raportu jakości; dwa różne rekordy z tym samym identyfikatorem — tak.
+- **Generator jako wyrocznia.** Generator danych wie, co zepsuł, więc wynik każdego demo
+  jest porównywany z odpowiedzią wzorcową — rozjazd wywala build.
+- **Koszt walidacji w liczbach.** Benchmark na 100 tys. rekordów: ile kosztuje walidacja
+  i ile złych rekordów przepuszcza jej pominięcie.
+
+## Architektura
+
+Ścieżka streamingowa:
+
+```mermaid
+flowchart TD
+    GEN[Generator zdarzeń] --> PUB[Publisher]
+    PUB --> V1{Walidacja u źródła<br/>kontrakt pydantic}
+    V1 -->|rekord poprawny| TOPIC[(Pub/Sub topic<br/>purchase-events)]
+    V1 -->|rekord odrzucony| QUAR[(BigQuery: quarantine<br/>rekord + powód)]
+    TOPIC --> SUB[Subskrypcja push]
+    SUB -->|HTTP POST z tokenem OIDC| RUN[Cloud Run: usługa ingest]
+    RUN --> V2{Walidacja po odbiorze<br/>ten sam kontrakt}
+    V2 -->|rekord poprawny| EV[(BigQuery: events)]
+    V2 -->|powtórka| ACK[Ack bez zapisu]
+    V2 -->|błąd walidacji| QUAR
+    RUN -->|awaria zapisu: HTTP 5xx| SUB
+    SUB -->|5 nieudanych prób| DLQ[(Pub/Sub: dead-letter topic)]
+    DLQ -->|redrive po usunięciu awarii| TOPIC
+```
+
+Ścieżka batchowa — ten sam kontrakt, inny transport:
+
+```mermaid
+flowchart TD
+    FILE[Plik NDJSON] --> SHA{SHA-256 pliku<br/>już załadowany?}
+    SHA -->|tak| SKIP[No-op]
+    SHA -->|nie| VAL{Walidacja rekord po rekordzie<br/>ten sam kontrakt}
+    VAL -->|poprawne, nowe| EVB[(events)]
+    VAL -->|powtórka| DROP[Pominięte]
+    VAL -->|odrzucone, w tym duplikat| QB[(quarantine)]
+    VAL --> MAN[Manifest loadu:<br/>liczby, rozkład powodów]
+```
+
+**Kwarantanna czy dead-letter?** Decyduje jedno pytanie: czy ponowienie może coś zmienić
+([ADR 0002](docs/adr/0002-quarantine-versus-dead-letter.md)).
+
+| Sytuacja w usłudze ingest | Odpowiedź | Gdzie ląduje wiadomość |
+| --- | --- | --- |
+| rekord przyjęty | 204 (ack) | `events` |
+| powtórka rekordu już przyjętego | 204 (ack) | nigdzie — zapis już jest |
+| rekord łamie kontrakt albo nie jest JSON-em | 204 (ack) | `quarantine` z powodem |
+| koperta niezgodna z formatem push | 422 (nack) | ponowienie → dead-letter |
+| awaria zapisu (BigQuery niedostępne) | 500 (nack) | ponowienie → dead-letter → redrive |
+
+Błąd danych dostaje ack, bo ponowienie tych samych bajtów da ten sam werdykt. Na dead-letter
+leżą zwykle **poprawne** zdarzenia po awarii technicznej, dlatego wracają przez redrive,
+a nie do kwarantanny — inaczej awaria infrastruktury wyglądałaby w raporcie jak zły kwartał
+jakości danych.
+
+Lokalnie i w CI miejsce Pub/Sub zajmuje emulator w Dockerze, a miejsce BigQuery — pliki JSONL
+z raportem w DuckDB ([ADR 0001](docs/adr/0001-local-sink-instead-of-bigquery-emulator.md)).
+Usługa ingest to ten sam obraz Dockera; sink przełącza zmienna `DQ_SINK`.
+
+## Uruchomienie od zera
+
+Wymagania: macOS albo Linux, `git`, `make`, [uv](https://docs.astral.sh/uv/) (sam pobierze
+Pythona 3.12) oraz Docker — ten ostatni tylko do streamingu i walidacji Terraforma.
+Konto Google Cloud nie jest potrzebne.
 
 ```bash
-make setup   # instaluje Pythona 3.12, tworzy .venv, synchronizuje workspace uv
-make check   # ruff + mypy strict + pytest — dokładnie ta sama bramka, którą odpala CI
-make gen            # 1000 zdarzeń, 20% celowo zepsutych, do data/events.jsonl
-make local-stream   # streaming end-to-end na emulatorze Pub/Sub (wymaga Dockera)
-make batch-local    # idempotentny batch: load, ten sam plik ponownie, plik nakładający się
-make bench          # koszt walidacji na 100 tys. rekordów
-make schemas        # schematy tabel BigQuery z modeli pydantic
-make tf-validate    # walidacja Terraforma bez konta GCP (wymaga Dockera)
+git clone https://github.com/pmackowka/shift-left-data-quality-pydantic.git
+cd shift-left-data-quality-pydantic
+make setup    # Python 3.12, .venv, wszystkie pakiety workspace'u
+make check    # ruff + mypy strict + pytest - ta sama bramka co CI (kilka sekund)
 ```
 
-Pełna lista komend: `make help`.
+Każde demo to jedna komenda i każde kończy się kontrolą wyniku:
 
-## Etapy prac
+| Komenda | Co robi | Docker | Czas |
+| --- | --- | :---: | --- |
+| `make gen N=1000 ERR=0.2` | 1000 zdarzeń, 20% celowo zepsutych, do `data/events.jsonl` | — | < 1 s |
+| `make batch-local` | trzy loady batchowe: pierwszy, ten sam plik ponownie, plik nakładający się | — | ok. 1 s |
+| `make local-stream` | emulator Pub/Sub + usługa ingest, trzy scenariusze, raport DuckDB | ✓ | ok. 1 min (+ pierwsze pobranie obrazu emulatora, ok. 1,4 GB) |
+| `make bench` | koszt walidacji na 100 tys. rekordów, siedem wariantów | — | ok. 14 s |
+| `make schemas` | schematy tabel BigQuery z modeli do `infra/terraform/schemas/` | — | < 1 s |
+| `make tf-validate` | `terraform fmt`, `init -backend=false`, `validate` | ✓ | pierwszy raz pobiera provider Google |
 
-Projekt powstaje etapami. Każdy etap kończy się działającą komendą, a nie samym kodem —
-jeśli czegoś nie da się uruchomić jedną komendą, etap nie jest zamknięty.
-
-### Etap 1 — szkielet i narzędzia ✅
-
-**Co robimy:** workspace uv z dwoma wersjonowanymi pakietami, ruff, mypy w trybie strict,
-pytest z pomiarem pokrycia, Makefile jako jedyny interfejs do projektu, GitHub Actions
-uruchamiające tę samą bramkę co lokalne `make check`.
-
-**Co to dodaje:** fundament, który wymusza jedno źródło prawdy. Zależność
-`dq-contracts = { workspace = true }` sprawia, że kontrakt rozwiązuje się do kodu z dysku,
-więc fizycznie nie da się mieć dwóch jego wersji w dwóch pipeline'ach. Od tego momentu każdy
-kolejny etap wchodzi do repozytorium przez tę samą bramkę jakości.
-
-**Sprawdzisz:** `make check`
-
-### Etap 2 — kontrakt danych ✅
-
-**Co robimy:** modele pydantic opisujące zdarzenie zakupu — typy ograniczone przez
-`Annotated` i `Field`, `ConfigDict(strict=True, extra="forbid")`, walidatory pojedynczych pól
-(`field_validator`) i walidatory spójności między polami (`model_validator`), mapowanie
-`ValidationError` na rekord kwarantanny z powodem odrzucenia. Każda reguła dostaje test
-pozytywny i negatywny.
-
-**Co to dodaje:** samą istotę projektu — wykonywalną definicję tego, czym jest poprawne
-zdarzenie. Do tej pory „poprawne dane" było pojęciem z dokumentacji; od tego etapu jest
-kodem, który można uruchomić i który przy złym rekordzie mówi, co konkretnie jest nie tak.
-
-**Sprawdzisz:** `make test`
-
-### Etap 3 — generator danych syntetycznych ✅
-
-**Co robimy:** parametryzowany generator zdarzeń: liczba rekordów, odsetek błędnych, rodzaje
-wstrzykiwanych błędów, ziarno losowości dla powtarzalności. Katalog błędów odpowiada
-jeden do jednego liście reguł z etapu 2.
-
-**Co to dodaje:** możliwość pokazania kwarantanny w działaniu. Walidator, którego nikt nie
-nakarmił złymi danymi, jest wart tyle co nieuruchomiony test. Ziarno losowości sprawia, że
-ten sam parametr daje ten sam zestaw danych — bez tego benchmark z etapu 5 mierzyłby szum.
-
-**Jak to działa:** każdy rodzaj błędu w katalogu ma przypisany powód kwarantanny, którym
-kontrakt musi na niego odpowiedzieć — generator jest więc też wyrocznią testową. Liczba
-błędnych rekordów nie jest losowana rekord po rekordzie: generator układa plan, w którym
-dokładnie `N × ERR` pozycji dostaje błąd, a rodzaje rozkładają się po równo. Znaczniki czasu
-liczy od jawnego czasu odniesienia (`--reference-time`), nie od ukrytego „teraz".
-
-```
-$ make gen N=1000 ERR=0.2
-dq-gen: 1000 records -> data/events.jsonl (seed=42, reference_time=...)
-  valid                        800
-  duplicate_transaction         25
-  future_timestamp              25
-  missing_field                 25
-  non_positive_amount           25
-  type_mismatch                 25
-  unexpected_field              25
-  unsupported_currency          25
-  value_mismatch                25
-```
-
-Jedno zastrzeżenie wynika z natury reguły, nie z implementacji: błąd `future_timestamp` leży
-1–14 godzin po czasie odniesienia, więc plik zwalidowany później przestaje go zawierać.
-„Przyszłość" jest względna — dlatego reguła nie jest idempotentna w czasie.
-
-**Sprawdzisz:** `make gen N=1000 ERR=0.2`
-
-### Etap 4 — streaming lokalnie ✅
-
-**Co robimy:** emulator Pub/Sub w Dockerze, publisher walidujący zdarzenia przed wysłaniem,
-subskrypcja push do lokalnej usługi ingest (odpowiednik Cloud Run), walidacja po odbiorze,
-temat dead-letter dla wiadomości, których nie da się przetworzyć.
-
-**Co to dodaje:** dowód, że cały pipeline działa bez konta GCP i bez wydawania złotówki —
-tym samym kodem ścieżki biznesowej, który potem pójdzie do chmury. Pokazuje też, po co
-walidować dwa razy: producent nie zaśmieca tematu, konsument nie ufa producentowi.
-
-**Jak to działa:** `make local-stream` stawia emulator Pub/Sub i obraz usługi ingest
-(ten sam `Dockerfile`, który poszedłby na Cloud Run), tworzy temat, subskrypcję push
-z polityką dead-letter i odgrywa trzy scenariusze:
-
-1. **Producent shift-left** waliduje przed publikacją — złe rekordy zostają u źródła
-   (`stage=source`), na temat idą wyłącznie poprawne.
-2. **Producent legacy** publikuje bez walidacji — te same rodzaje błędów łapie dopiero
-   usługa ingest (`stage=ingest`).
-3. **Redrive** — wiadomości z tematu dead-letter wracają na temat główny i zostają przyjęte.
-
-Na końcu raport DuckDB na plikach JSONL jest porównywany z odpowiedzią wzorcową generatora.
-Rozjazd kończy przebieg błędem — demo jest jednocześnie testem end-to-end i działa w CI
-jako osobny job.
+Oczekiwany koniec `make local-stream` — liczby zgodne z odpowiedzią wzorcową generatora:
 
 ```
 events accepted             820
@@ -137,48 +152,114 @@ OK   accepted events: 820
 OK   no duplicate rows: 820
 ```
 
-**Ograniczenie emulatora, opisane wprost:** naturalna droga na dead-letter (usługa leży,
-Pub/Sub po 5 próbach przenosi wiadomość) w emulatorze nie działa niezawodnie. Przy serii
-wiadomości emulator wstrzymuje push po ok. 3 nieudanych rundach i nic nie trafia na
-dead-letter — sprawdzone na świeżej instancji, zarówno przy odmowie połączenia, jak i przy
-HTTP 500. Scenariusz 3 kładzie więc wiadomości na temat dead-letter wprost i weryfikuje
-mechanikę redrive. Polityka dead-letter jest skonfigurowana jak na produkcji, ale jej
-działanie potwierdziłby dopiero prawdziwy Pub/Sub.
+Scenariusze streamingu: (1) producent waliduje przed publikacją — 120 rekordów zostaje
+u źródła; (2) producent „legacy" publikuje bez walidacji — 80 złych rekordów łapie dopiero
+ingest; (3) 20 wiadomości z tematu dead-letter wraca przez redrive. Po porażce kontenery
+zostają do debugowania (`docker compose logs ingest`); sprzątanie: `make local-stream-down`.
 
-**Sprawdzisz:** `make local-stream`
+Pełna lista komend: `make help`.
 
-### Etap 5 — batch lokalnie ✅
+## Kontrakt: reguły walidacji
 
-**Co robimy:** przetwarzanie całego pliku naraz, raport z przebiegu (ile rekordów przeszło,
-ile wylądowało w kwarantannie, rozkład powodów odrzucenia), idempotentność (ponowne wgranie
-tego samego pliku nie duplikuje wierszy) oraz benchmark na 100 tys. rekordów.
+Model `PurchaseEvent` wzorowany na zdarzeniu `purchase` z GA4: wartość, waluta, pozycje,
+wysyłka, rabat, źródło ruchu. Konfiguracja `ConfigDict(strict=True, extra="forbid",
+frozen=True)`, powtórzona w modelach zagnieżdżonych, bo pydantic nie dziedziczy jej w dół.
 
-**Co to dodaje:** to, czego nie widać w streamingu — koszt walidacji w liczbach i zestawienie
-`model_validate` z `model_construct` oraz `TypeAdapter`. Odpowiada na pytanie, kiedy pominięcie
-walidacji jest uzasadnione, a kiedy jest po prostu oszczędzaniem na hamulcach.
+| # | Reguła | Mechanizm pydantic | Powód w kwarantannie | Komunikat (z prawdziwego rekordu) |
+| --- | --- | --- | --- | --- |
+| 1 | wartość = suma pozycji + wysyłka − rabat, co do grosza | `model_validator(mode="after")`, `Decimal` | `value_mismatch` | `Transaction value 390.84 does not match line items (459.80 + shipping 0.00 - discount 68.97 = 390.83)` |
+| 2 | znacznik czasu nie z przyszłości (tolerancja 5 min) | `field_validator`, `AwareDatetime` | `future_timestamp` | `Event timestamp 2026-10-02T19:22:00+00:00 is more than 0:05:00 ahead of now (…)` |
+| 3 | cena i ilość dodatnie | `Field(gt=0)` w typach `Money`, `Quantity` | `non_positive_amount` | `items.1.price`: `Input should be greater than 0` (wejście `-59.49`) |
+| 4 | waluta z dozwolonego zbioru | `StrEnum` | `unsupported_currency` | `Input should be 'PLN', 'EUR', 'USD', 'GBP' or 'CZK'` (wejście `CHF`) |
+| 5 | brak duplikatu transakcji | `TransactionLedger` (stan, poza modelem) | `duplicate_transaction` | `Transaction 'T-12-0000003' has already been seen in this run` |
+| 6a | brak pola wymaganego | pola bez wartości domyślnej | `missing_field` | `transaction_id`: `Field required` |
+| 6b | brak pól nadmiarowych, także w pozycjach | `extra="forbid"` | `unexpected_field` | `items.0.gclid`: `Extra inputs are not permitted` |
+| 7 | typ co do joty: `"3"` to nie `3` | `strict=True` | `type_mismatch` | `items.1.quantity`: `Input should be a valid integer` |
 
-**Powtórka to nie duplikat.** Przy gwarancji „co najmniej raz" ten sam rekord przychodzi
-drugi raz z powodów transportowych: Pub/Sub ponawia dostarczenie, redrive publikuje
-ponownie, ktoś wgrywa ten sam plik. Pipeline pamięta odcisk treści każdej przyjętej
-transakcji (BLAKE2b z kanonicznego JSON-a po walidacji) i rozróżnia:
+Poza listą reguł kwarantanna rozpoznaje jeszcze uszkodzony JSON (`malformed_payload`)
+i wartości poza granicami typu — za długie pole, ilość ponad 10 000, zły wzorzec
+identyfikatora (`out_of_range`). Każda reguła ma test pozytywny i negatywny, a generator —
+odpowiadający jej rodzaj błędu; test kompletności pada, gdy kontrakt dostanie nowy powód
+bez odpowiednika w generatorze.
+
+Duplikat jest jedyną regułą, której nie da się sprawdzić na pojedynczym rekordzie, dlatego
+żyje poza modelem: `ValidationError` mówi „ten rekord sam w sobie jest zły", a błąd biznesowy
+— „rekord jest poprawny, ale nie wolno go przyjąć w tym kontekście".
+
+Strict znaczy co innego dla JSON-a i dla obiektów Pythona. Na ścieżce produkcyjnej
+(`model_validate_json`) tekst `"19.99"` jest poprawnym `Decimal`, a `"2026-10-02T10:00:00Z"`
+poprawną datą — JSON nie ma tych typów. Liczba całkowita przysłana jako tekst zostaje
+odrzucona w obu trybach, bo JSON potrafi ją wyrazić.
+
+## Kwarantanna: jak wygląda odrzucony rekord
+
+Rekord kwarantanny odpowiada na trzy pytania: co przyszło, dlaczego zostało odrzucone i gdzie
+to wyszło. Przykład z usługi ingest (treść `raw_payload` skrócona):
+
+```json
+{
+  "rejected_at": "2026-10-02T10:46:16.643183Z",
+  "stage": "ingest",
+  "reason": "value_mismatch",
+  "contract_version": "0.1.0",
+  "transaction_id": "T-12-0000047",
+  "raw_payload": "{\"event_id\":\"afa01e95-3019-426b-8ecc-3ffa60b2faa4\",\"transaction_id\":\"T-12-0000047\",…",
+  "issues": [
+    {
+      "field_path": "",
+      "error_type": "value_mismatch",
+      "message": "Transaction value 390.84 does not match line items (459.80 + shipping 0.00 - discount 68.97 = 390.83)",
+      "input_value": "{'event_id': 'afa01e95-…', 'value': '390.84', 'discount': '68.97', …}"
+    }
+  ]
+}
+```
+
+I drugi, z błędem typu w pozycji zamówienia:
+
+```json
+{
+  "stage": "ingest",
+  "reason": "type_mismatch",
+  "transaction_id": "T-12-0000017",
+  "issues": [
+    {
+      "field_path": "items.1.quantity",
+      "error_type": "int_type",
+      "message": "Input should be a valid integer",
+      "input_value": "3"
+    }
+  ]
+}
+```
+
+- `reason` to kategoria do raportu — jedna na rekord, wybrana według stałej ważności
+  (błędy struktury przed błędami wartości), więc zliczenia zawsze się sumują.
+- `error_type` to stabilny kod pydantic albo walidatora własnego. Mapowanie na powód idzie
+  po kodzie, nigdy po treści komunikatu — komunikat wolno poprawić bez zmiany wersji kontraktu.
+- `stage` mówi, gdzie błąd wyszedł: `source` (u producenta), `ingest` (producent nie
+  walidował) albo `batch`.
+- `raw_payload` jest oryginałem co do bajtu — rekord odrzucony bez oryginału nadaje się
+  tylko do policzenia.
+
+## Powtórki, duplikaty i idempotentność
+
+Pub/Sub i batch dają gwarancję „co najmniej raz", więc ten sam rekord przychodzi drugi raz
+z powodów transportowych. Pipeline pamięta odcisk treści każdej przyjętej transakcji
+(BLAKE2b z kanonicznego JSON-a po walidacji, [ADR 0003](docs/adr/0003-replay-versus-duplicate.md)):
 
 | Ten sam `transaction_id`… | Werdykt | Zapis |
 | --- | --- | --- |
-| …z identyczną treścią | powtórka | brak — rekord już jest |
+| …z identyczną treścią (także inaczej sformatowaną, w innej strefie czasu) | powtórka | brak — rekord już jest |
 | …z inną treścią | duplikat | kwarantanna `duplicate_transaction` |
 
-Bez tego rozróżnienia każde ponowienie lądowało w kwarantannie i raport jakości rósł od
-samego transportu. Reguła działa tak samo w streamingu i w batchu.
-
-**Idempotentność na dwóch poziomach:**
+Loader batchowy jest idempotentny na dwóch poziomach ([ADR 0005](docs/adr/0005-batch-idempotency.md)):
 
 1. **Plik** — load identyfikuje SHA-256 treści, nie nazwa. Wynik powstaje w katalogu
-   roboczym i trafia na miejsce jednym `os.replace`, a manifest zapisywany jest jako
-   ostatni. Ten sam plik drugi raz to no-op; load przerwany w połowie nie zostawia
-   połowy danych.
+   roboczym i trafia na miejsce jednym `os.replace`; manifest zapisywany jest jako ostatni.
+   Ten sam plik drugi raz to no-op, a load przerwany w połowie nie zostawia połowy danych.
 2. **Wiersz** — pamięć transakcji zasilana z wcześniejszych loadów rozpoznaje wiersze,
-   które już przyszły w innym pliku. To lokalny odpowiednik `MERGE ... ON transaction_id`
-   w BigQuery.
+   które przyszły już w innym pliku. To lokalny odpowiednik `MERGE ... ON transaction_id`.
 
 ```
 $ make batch-local
@@ -196,9 +277,15 @@ OK   total events: 10000
 OK   no duplicate rows: 10000
 ```
 
-**Benchmark** (`make bench`; MacBook arm64, Python 3.12, pydantic 2.13, 100 tys.
-poprawnych rekordów, najlepszy z 3 przebiegów; ostatnia kolumna liczy celowo zepsute
-rekordy przepuszczone z próbki 10 tys. z 10% błędów):
+W BigQuery deduplikacja ma trzy warstwy: pamięć powtórek w instancji usługi, `insertId`
+przy zapisie (BigQuery odrzuca ponowiony insert w krótkim oknie) i widok
+`events_deduplicated`, z którego czytają raporty ([ADR 0004](docs/adr/0004-bigquery-streaming-inserts.md)).
+
+## Benchmark walidacji
+
+`make bench`: 100 tys. poprawnych rekordów, najlepszy z 3 przebiegów; ostatnia kolumna liczy
+celowo zepsute rekordy przepuszczone z próbki 10 tys. z 10% błędów. MacBook arm64,
+Python 3.12, pydantic 2.13 — liczą się proporcje, nie wartości bezwzględne.
 
 | Wariant | µs / rekord | Rekordy / s | Przyjęte poprawne | Przepuszczone zepsute |
 | --- | ---: | ---: | ---: | ---: |
@@ -212,212 +299,196 @@ rekordy przepuszczone z próbki 10 tys. z 10% błędów):
 
 ¹ Jeden zły rekord unieważnia całą partię — odrzucone zostają też poprawne.
 ² Strict w ścieżce Pythona odrzuca tekst w polach `Decimal`, `UUID` i `datetime`, czyli
-każdy rekord sparsowany z JSON-a. Dlatego pipeline używa `model_validate_json`.
-
-Co z tego wynika:
+każdy rekord sparsowany z JSON-a.
 
 - **Walidacja kosztuje ok. 4 µs na rekord ponad samo parsowanie** — 0,65 s na 100 tys.
-  zdarzeń. Przy milionie zdarzeń dziennie to kilka sekund CPU na dobę.
-- **`model_construct` oszczędza ok. 3 µs i przepuszcza 100% błędów.** Zostawia przy tym
-  `value` jako `str` zamiast `Decimal`, a pozycje jako surowe słowniki — model ma typy
-  tylko z nazwy. Uzasadnione wyłącznie dla danych zwalidowanych chwilę wcześniej tym
-  samym kontraktem, np. przy odczycie własnej tabeli `events`.
-- **Tryb lax jest wolniejszy od strict i przepuszcza dwa razy więcej.** Koercja kosztuje,
-  a `"2"` zamiast `2` w ilości zostaje po cichu „naprawione".
-- **125 rekordów przepuszczonych przez strict to duplikaty.** Schemat z definicji ich
-  nie widzi — od tego jest pamięć transakcji, a nie model.
-- **Walidacja całej partii naraz nie jest szybsza**, a odbiera możliwość odrzucenia
-  pojedynczego rekordu. Do sortowania na dobre i złe — tylko rekord po rekordzie.
+  zdarzeń, kilka sekund CPU na dobę przy milionie zdarzeń dziennie.
+- **`model_construct` oszczędza ok. 3 µs i przepuszcza wszystko**, łącznie z ujemną kwotą
+  i walutą BTC. Zostawia też `value` jako `str` zamiast `Decimal` — model ma typy tylko
+  z nazwy. Uzasadniony wyłącznie dla danych zwalidowanych chwilę wcześniej tym samym kontraktem.
+- **Tryb lax jest wolniejszy od strict i przepuszcza dwa razy więcej** — koercja kosztuje,
+  a `"2"` zamiast `2` zostaje po cichu „naprawione".
+- **125 rekordów przepuszczonych przez strict to duplikaty.** Schemat ich z definicji nie
+  widzi — od tego jest pamięć transakcji.
 
-**Sprawdzisz:** `make batch-local` oraz `make bench`
+Wnioski i warianty odrzucone: [ADR 0006](docs/adr/0006-strict-mode-and-validate-json.md).
 
-### Etap 6 — infrastruktura jako kod ✅
+## Usługi GCP i dlaczego te
 
-**Co robimy:** Terraform opisujący komplet zasobów: projekt GCP, włączenie potrzebnych API,
-tematy i subskrypcje Pub/Sub, temat dead-letter, dataset i tabele BigQuery, usługa Cloud Run,
-konto usługi z minimalnymi uprawnieniami. Schematy tabel generuje `make schemas` z modeli
-pydantic, a CI pilnuje, żeby wygenerowany schemat nie rozjechał się z zacommitowanym.
-
-**Co to dodaje:** domknięcie idei jednego źródła prawdy aż do hurtowni — definicja tabeli
-przestaje być czymś, co ktoś kiedyś wyklikał w konsoli. Infrastruktura jest tu **kodem do
-przeczytania i zwalidowania, nie uruchomioną chmurą**: `terraform apply` świadomie nie zostaje
-wykonany, więc punkt „demo na GCP" pozostaje niezaznaczony. Kod ma komentarze wyjaśniające
-krok po kroku, co zrobić, żeby go odpalić.
-
-**Jak to działa:**
-
-- **Schematy z modeli.** `make schemas` tłumaczy modele pydantic na schematy BigQuery:
-  `Decimal(max_digits=12, decimal_places=2)` → `NUMERIC(12, 2)`, model zagnieżdżony →
-  `RECORD`, lista → `REPEATED`, enum → `STRING` z dozwolonymi wartościami w opisie kolumny.
-  Nieznany typ to błąd, nie ciche `STRING`. Test w `make check` pada, gdy model zmieni się
-  bez przegenerowania schematu — rozjazd wychodzi w pull requeście, nie na produkcji.
-- **Sink BigQuery.** Ta sama usługa ingest pisze lokalnie do JSONL, a na Cloud Run do BigQuery
-  — przełącza ją wyłącznie `DQ_SINK`. Deduplikacja ma trzy warstwy: pamięć powtórek w
-  instancji, `insertId` w BigQuery (okno ok. minuty) i widok `events_deduplicated`, z którego
-  czytają raporty.
-- **Terraform** (`infra/terraform/`): projekt GCP, API, Artifact Registry, Pub/Sub z push
-  przez OIDC i dead-letter, BigQuery z tabelami partycjonowanymi po czasie zdarzenia, usługa
-  Cloud Run, dwa konta usług z minimalnymi uprawnieniami. Nazwy zasobów pilnuje test
-  względem kodu (`Topology`, schematy).
-- **Walidacja bez konta.** `make tf-validate` i job CI `terraform`: `fmt -check`,
-  `init -backend=false`, `validate`. Sprawdza składnię, typy i referencje; nie sprawdza
-  uprawnień ani quoty — to wiedziałby dopiero `plan` z poświadczeniami.
-
-**Świadomie poza zakresem: loader batchowy w chmurze.** Lokalny loader opiera idempotentność
-na atomowej zmianie nazwy katalogu, a na zamontowanym buckecie GCS taka operacja nie jest
-atomowa. Wersja chmurowa to inny mechanizm: load job BigQuery do tabeli tymczasowej i `MERGE`
-po `transaction_id`. Logika walidacji jest gotowa i wspólna, brakuje tylko tego zapisu.
-
-**Sprawdzisz:** `make tf-validate` (walidacja bez konta GCP, przez obraz Dockera)
-
-### Etap 7 — dokumentacja
-
-**Co robimy:** pełne README — opis problemu, diagram architektury w Mermaid, lista usług GCP
-z uzasadnieniem każdej, instrukcja uruchomienia od zera, opis wszystkich reguł walidacji,
-przykłady rekordów w kwarantannie z powodem odrzucenia, wyniki benchmarku, szacunek kosztów,
-procedura teardown oraz sekcja decyzji architektonicznych i wariantów odrzuconych.
-
-**Co to dodaje:** warunek, bez którego projekt nie ma sensu jako portfolio — obca osoba ma
-odtworzyć całość bez zadawania pytań autorowi.
-
-## Architektura przepływu danych
-
-Ścieżka streamingowa — od wygenerowania zdarzenia do wiersza w hurtowni:
-
-```mermaid
-flowchart TD
-    GEN[Generator zdarzeń] --> PUB[Publisher]
-    PUB --> V1{Walidacja u źródła<br/>kontrakt pydantic}
-    V1 -->|rekord poprawny| TOPIC[(Pub/Sub topic<br/>purchase-events)]
-    V1 -->|rekord odrzucony| QUAR[(BigQuery: quarantine<br/>rekord + powód)]
-    TOPIC --> SUB[Subskrypcja push]
-    SUB -->|HTTP POST z tokenem OIDC| RUN[Cloud Run: usługa ingest]
-    RUN --> V2{Walidacja po odbiorze<br/>ten sam kontrakt}
-    V2 -->|rekord poprawny| EV[(BigQuery: events)]
-    V2 -->|błąd walidacji| QUAR
-    RUN -->|awaria zapisu: HTTP 5xx| SUB
-    SUB -->|przekroczony limit prób dostarczenia| DLQ[(Pub/Sub: dead-letter topic)]
-    DLQ -->|redrive po usunięciu awarii| TOPIC
-```
-
-Walidacja wykonuje się dwa razy i to jest decyzja, nie przeoczenie: producent nie zaśmieca
-tematu, a konsument nie ufa producentowi. Koszt tej duplikacji mierzymy w etapie 5.
-
-Rozróżnienie kwarantanny od dead-letter wynika z jednego pytania: czy ponowienie może coś
-zmienić?
-
-- **Kwarantanna** — werdykt jest deterministyczny: ten sam bajt da ten sam wynik. Trafia tu
-  rekord łamiący kontrakt, a także uszkodzony JSON (`malformed_payload`). Usługa odpowiada
-  204 (ack), bo retry tylko zapchałby kolejkę. Rekord zostaje zapisany razem z powodem
-  i surowym payloadem, więc da się go naprawić i wgrać ponownie.
-- **Dead-letter** — przetwarzanie się nie udało z przyczyn technicznych (sink niedostępny,
-  usługa leży). Usługa odpowiada kodem błędu, Pub/Sub ponawia, a po wyczerpaniu prób
-  przenosi wiadomość na dead-letter. Leżą tam zwykle **poprawne** zdarzenia, dlatego
-  nie idą do kwarantanny — oznaczenie ich jako złych danych zafałszowałoby raport jakości.
-  Po usunięciu przyczyny redrive przepuszcza je jeszcze raz.
-
-To zmiana względem pierwotnego planu, w którym uszkodzony JSON szedł na dead-letter,
-a dead-letter do kwarantanny. Powód: retry deterministycznego błędu niczego nie naprawia,
-a mieszanie awarii infrastruktury z błędami danych psuje metrykę jakości.
-
-Ścieżka batchowa — ten sam kontrakt, inny tryb pracy:
-
-```mermaid
-flowchart TD
-    FILE[Plik NDJSON<br/>lokalnie lub w GCS] --> SHA{SHA-256 pliku<br/>już załadowany?}
-    SHA -->|tak| SKIP[No-op]
-    SHA -->|nie| VAL{Walidacja rekord po rekordzie<br/>ten sam kontrakt}
-    VAL -->|poprawne, nowe| EVB[(BigQuery: events)]
-    VAL -->|powtórka| DROP[Pominięte]
-    VAL -->|odrzucone, w tym duplikat| QB[(BigQuery: quarantine)]
-    VAL --> REP[Manifest loadu:<br/>liczby, rozkład powodów odrzucenia]
-```
-
-## Jak wyglądałoby wdrożenie
-
-**Ważne zastrzeżenie:** w tym repozytorium infrastruktura jest **kodem, nie uruchomioną
-chmurą**. Terraform jest kompletny i zwalidowany (`terraform validate`), ale `terraform apply`
-świadomie nie zostaje wykonany — nie istnieje projekt GCP, nie ma rachunku, nie ma wdrożonej
-usługi. Poniższy opis mówi więc, co by się stało po uruchomieniu, a nie co się wydarzyło.
-Punkt „demo na GCP" w Definition of Done pozostaje niezaznaczony i tak jest to oznaczone.
-
-### Gdzie żyje który element
-
-| Element | Miejsce docelowe | Uwaga |
+| Usługa | Rola | Dlaczego ta, a nie alternatywa |
 | --- | --- | --- |
-| `dq-contracts` | wewnątrz obrazu usługi ingest oraz w środowisku publishera i loadera | To biblioteka, nie usługa — nie wdraża się jej osobno. Jej wersja jedzie w kopercie każdego zdarzenia. |
-| Usługa ingest | Cloud Run (region `europe-central2`) | Skalowanie do zera: brak ruchu = brak kosztu. |
-| Obraz kontenera | Artifact Registry | Budowany lokalnie (`docker buildx --platform linux/amd64`) i wypychany do rejestru. |
-| Publisher | uruchamiany z laptopa przez ADC, docelowo Cloud Run Job | W demo to narzędzie, nie element produkcyjny. |
-| Loader batchowy | docelowo Cloud Run Job (`dq-batch`) na tym samym obrazie | **Nie ma w Terraformie.** Lokalna idempotentność stoi na atomowym `rename`, którego nie ma na GCS; w chmurze potrzebny load job + `MERGE`. |
-| Kolejka | Pub/Sub: temat, subskrypcja push, temat dead-letter | Subskrypcja push uwierzytelnia się do Cloud Run tokenem OIDC. |
-| Dane | BigQuery: tabele `events` i `quarantine`, widok `events_deduplicated` | `events` partycjonowane po dacie zdarzenia i klastrowane po `transaction_id`; `quarantine` po dacie odrzucenia, klastrowane po etapie i powodzie. Raporty czytają widok. |
-| Schematy tabel | `infra/terraform/schemas/*.json`, generowane z modeli | Terraform czyta je przez `file()`, CI pilnuje rozjazdu. |
-| Stan Terraforma | bucket GCS z wersjonowaniem | W repo backend jest lokalny, bo projekt nie istnieje; plik stanu nigdy nie trafia do gita. |
-| Tożsamość | dwa konta usług: `ingest-runtime` (zapis do datasetu) i `pubsub-push` (wywołanie usługi), lokalnie ADC | Zero kluczy JSON — ani w repo, ani na dysku. Agent Pub/Sub dostaje role, bez których dead-letter po cichu nie działa. |
+| **Pub/Sub** | temat zdarzeń, subskrypcja push, dead-letter | Zarządzana kolejka z dead-letter i retry z backoffem w konfiguracji, bez utrzymywania brokera. Kafka (np. Confluent) dałaby kolejność i replay na dłuższy okres, ale przy tym wolumenie to klaster do utrzymania bez korzyści. |
+| **Cloud Run** | usługa ingest odbierająca push | Skaluje do zera (brak ruchu = brak kosztu), przyjmuje zwykły kontener, a uwierzytelnienie OIDC sprawdza platforma. Cloud Functions ograniczyłyby obraz i lokalne testy; GKE to klaster dla jednej usługi. |
+| **BigQuery** | tabele `events`, `quarantine`, widok z deduplikacją | Hurtownia docelowa ecommerce'u (GA4 eksportuje tu dane), płatność za przeczytane bajty, partycjonowanie po czasie zdarzenia. Schemat generowany z modeli. |
+| **Artifact Registry** | obraz `dq-pipeline` | Rejestr w tym samym regionie co Cloud Run, uprawnienia przez IAM projektu. |
+| **IAM** | dwa konta usług + role agenta Pub/Sub | Osobna tożsamość dla usługi (pisze do datasetu) i dla wywołującego (tylko woła usługę). Zero kluczy JSON. |
 
-### Droga artefaktu
+Region `europe-central2` (Warszawa) dla wszystkiego: dane w UE, bez transferu między
+regionami. Świadomie **bez** Dataflow (koszt i złożoność nieproporcjonalne do walidacji
+pojedynczych rekordów), bez subskrypcji BigQuery w Pub/Sub (zapis z pominięciem walidacji po
+odbiorze) i bez Cloud Storage (batch nie jest wdrożony w chmurze — patrz ograniczenia).
+
+## Wdrożenie na GCP
+
+> Ta sekcja opisuje, co **by się stało** po uruchomieniu. Kod jest kompletny
+> i zwalidowany (`terraform validate` w CI), ale `terraform apply` nie został wykonany.
+
+Terraform w `infra/terraform/` tworzy również sam projekt. Ręcznie trzeba zrobić trzy rzeczy,
+bo wymagają decyzji człowieka albo uprawnień spoza projektu:
+
+1. Konto Google Cloud z aktywnym kontem rozliczeniowym — bez billingu nie da się włączyć
+   Cloud Run ani BigQuery, nawet w darmowych limitach.
+2. `gcloud auth application-default login` — poświadczenia ADC dla Terraforma i publishera.
+3. `cp infra/terraform/example.tfvars infra/terraform/terraform.tfvars` i uzupełnienie
+   identyfikatora projektu oraz konta rozliczeniowego (plik jest w `.gitignore`).
+
+Pierwszy `apply` jest dwuetapowy, bo usługa Cloud Run wskazuje na obraz, którego nie da się
+wypchnąć, zanim istnieje rejestr. Steruje tym zmienna `deploy_service`:
+
+```bash
+cd infra/terraform
+terraform init
+terraform apply -var deploy_service=false        # projekt, API, rejestr, Pub/Sub, BigQuery, IAM
+
+gcloud auth configure-docker europe-central2-docker.pkg.dev
+docker buildx build --platform linux/amd64 \
+  -t "$(terraform output -raw image_repository)/dq-pipeline:$(git rev-parse --short HEAD)" \
+  --push ../..                                    # Cloud Run uruchamia obrazy amd64
+
+terraform apply -var deploy_service=true \
+  -var image_tag=$(git rev-parse --short HEAD)    # Cloud Run + subskrypcja push
+
+export DQ_GCP_PROJECT=$(terraform output -raw project_id)
+cd ../..
+make gen
+uv run dq-pubsub publish data/events.jsonl      # publisher z walidacją u źródła
+```
 
 ```mermaid
 flowchart LR
     subgraph LOCAL[Stacja robocza]
         SRC[Repozytorium:<br/>kod + Terraform]
-        BUILD[docker buildx<br/>obraz usługi ingest]
+        BUILD[docker buildx<br/>linux/amd64]
     end
     subgraph GCP[Projekt GCP]
         AR[Artifact Registry]
-        CR[Cloud Run:<br/>nowa rewizja]
-        REST[Pub/Sub, BigQuery,<br/>konto usługi, IAM]
+        CR[Cloud Run: dq-ingest]
+        REST[Pub/Sub, BigQuery, IAM]
     end
+    SRC -->|apply 1: deploy_service=false| REST
+    SRC -->|apply 1| AR
     SRC --> BUILD
     BUILD -->|docker push| AR
-    AR -->|terraform apply<br/>deploy_service = true| CR
-    SRC -->|terraform apply| REST
+    AR -->|apply 2: image_tag| CR
 ```
 
-Kolejność ma znaczenie i wynika z zależności: obraz musi istnieć w rejestrze, zanim Terraform
-utworzy usługę Cloud Run, bo definicja usługi wskazuje na konkretny tag obrazu. Dlatego
-pierwszy `apply` robi się dwuetapowo, sterowany zmienną `deploy_service`:
+Stan Terraforma jest lokalny, bo bucket na stan nie istnieje przed pierwszym `apply`.
+Przeniesienie do GCS z wersjonowaniem opisuje komentarz w `versions.tf`.
 
-1. `terraform apply -var deploy_service=false` — projekt, API, rejestr, Pub/Sub, BigQuery, IAM.
-2. `docker buildx build --platform linux/amd64 -t <image_repository>/dq-pipeline:<sha> --push .`
-3. `terraform apply -var image_tag=<sha>` — usługa Cloud Run i subskrypcja push do niej.
+## Szacunek kosztów
 
-Komentarze w `infra/terraform/` prowadzą przez to krok po kroku.
+Scenariusz: **1 mln zdarzeń miesięcznie** (ok. 33 tys. dziennie), średnie zdarzenie 550 B
+(zmierzone na generatorze), region `europe-central2`. Ceny i darmowe limity ze stron cennika
+Google Cloud sprawdzone 2026-10-02; to lista cen w USD dla regionów USA — w Warszawie część
+stawek jest nieco wyższa. To wyliczenie, nie rachunek z działającego projektu.
 
-### Co trzeba by zrobić ręcznie
+| Pozycja | Zużycie | Darmowy limit / mies. | Koszt / mies. |
+| --- | --- | --- | ---: |
+| Pub/Sub — przepustowość | publikacja w paczkach ok. 0,5 GiB + push ok. 1 GiB (min. 1 KB na żądanie) | 10 GiB | $0 |
+| Pub/Sub — retencja tematu 7 dni | ok. 0,12 GiB-miesiąca ($0,27 / GiB-mies.) | — | ~$0,03 |
+| Cloud Run | 1 mln żądań; ≤ 100 tys. vCPU-s i ≤ 50 tys. GiB-s przy założeniu 100 ms na żądanie | 2 mln żądań, 180 tys. vCPU-s, 360 tys. GiB-s | $0 |
+| BigQuery — zapis `insertAll` | 1 mln wierszy × min. 1 KB ≈ 977 MiB (od $0,01 / 200 MiB) | brak | ~$0,05 |
+| BigQuery — magazyn | ok. 0,5 GiB przyrostu miesięcznie | 10 GiB | $0 |
+| BigQuery — zapytania | raporty na partycjach | 1 TiB | $0 |
+| Artifact Registry | jeden obraz | 0,5 GB | $0* |
+| **Razem** | | | **~$0,08** |
 
-Terraform nie zrobi za nikogo trzech rzeczy, bo wymagają decyzji człowieka albo uprawnień
-spoza projektu:
+\* Darmowy limit mieści jeden, góra dwa obrazy; trzymanie wielu tagów zaczyna kosztować.
 
-1. Utworzyć konto Google Cloud i podpiąć konto rozliczeniowe (nawet jeśli demo mieści się
-   w limitach darmowych, Google wymaga aktywnego billingu do włączenia API).
-2. Uwierzytelnić się lokalnie: `gcloud auth application-default login` — to tworzy ADC,
-   czyli poświadczenia, których używa Terraform i lokalny publisher. Żadnego klucza JSON.
-3. Uzupełnić `terraform.tfvars` własnym identyfikatorem projektu i numerem konta
-   rozliczeniowego; szablon z pustymi wartościami leży obok jako `example.tfvars`.
+- **Bez ruchu** usługa skaluje do zera, a koszt sprowadza się do retencji tematu i magazynu
+  — pojedyncze centy.
+- **Pierwsza rzecz, która rośnie z wolumenem,** to zapis do BigQuery: `insertAll` płaci od
+  pierwszego bajtu, a Storage Write API ma 2 TiB miesięcznie za darmo. Przy tej skali różnica
+  to centy, dlatego wybór padł na prostszy interfejs — z zaznaczeniem jako kandydat do zmiany.
+- **Minima rozliczeniowe dominują nad rozmiarem danych:** zdarzenie ma 550 B, a Pub/Sub
+  i BigQuery liczą co najmniej 1 KB za żądanie / wiersz.
 
-Resztę — projekt, włączenie API, zasoby, uprawnienia — tworzy Terraform. Teardown to jedna
-komenda (`make destroy`), która kasuje projekt razem z zawartością, więc rachunek wraca do zera.
+## Teardown
+
+```bash
+make destroy   # terraform destroy w kontenerze, z ADC z ~/.config/gcloud
+```
+
+Projekt ma `deletion_policy = "DELETE"`, a tabele i usługa `deletion_protection = false`,
+więc jedna komenda usuwa projekt razem z zawartością i rachunek wraca do zera. Google trzyma
+usunięty projekt jeszcze 30 dni z możliwością przywrócenia; identyfikator projektu nie wraca
+do puli. Lokalnie: `make local-stream-down` i `make clean`.
+
+## Decyzje architektoniczne
+
+| ADR | Decyzja | Odrzucone warianty |
+| --- | --- | --- |
+| [0001](docs/adr/0001-local-sink-instead-of-bigquery-emulator.md) | lokalnie sink JSONL + DuckDB | emulator BigQuery (zielony test bez pokrycia dla `NUMERIC` i `MERGE`), Postgres |
+| [0002](docs/adr/0002-quarantine-versus-dead-letter.md) | kwarantanna dla błędów danych, dead-letter dla awarii, redrive na temat | zły JSON na dead-letter i dead-letter do kwarantanny |
+| [0003](docs/adr/0003-replay-versus-duplicate.md) | powtórka vs duplikat po odcisku treści, pamięć w pipelinie | sam identyfikator, para identyfikatorów, zmiana rejestru w kontrakcie |
+| [0004](docs/adr/0004-bigquery-streaming-inserts.md) | `insertAll` + `insertId` + widok z deduplikacją | Storage Write API (kandydat do zmiany), subskrypcja BigQuery, `MERGE` na każdy zapis |
+| [0005](docs/adr/0005-batch-idempotency.md) | SHA-256 pliku, atomowy rename, pamięć wierszy | rejestr nazw plików, dopisywanie do wspólnych plików |
+| [0006](docs/adr/0006-strict-mode-and-validate-json.md) | strict + `model_validate_json` rekord po rekordzie | lax, `model_construct`, walidacja całej partii |
+
+Decyzje mniejsze, opisane w komentarzach przy kodzie: workspace uv z zależnościami
+`{ workspace = true }` (fizycznie jedna kopia kontraktu), `Decimal` zamiast `float` dla kwot
+(porównanie co do grosza bez progu tolerancji), wersja kontraktu w każdym zdarzeniu,
+generator z jawnym czasem odniesienia (reguła „nie z przyszłości" nie jest idempotentna w czasie).
+
+## Ograniczenia i czego nie zweryfikowano
+
+- **Demo na GCP: niewykonane.** `terraform validate` sprawdza składnię, typy i referencje;
+  uprawnień, quoty i tego, czy Google przyjmie konfigurację, nie sprawdzi bez `plan`/`apply`.
+  Sink BigQuery jest testowany jednostkowo z podmienionym klientem.
+- **Dead-letter end-to-end.** Emulator Pub/Sub przy serii wiadomości wstrzymuje push po ok.
+  3 nieudanych rundach i niczego nie przenosi na dead-letter (sprawdzone na świeżej instancji,
+  przy odmowie połączenia i przy HTTP 500). Demo kładzie wiadomości na dead-letter wprost
+  i weryfikuje redrive; samo przeniesienie potwierdziłby dopiero prawdziwy Pub/Sub.
+- **Loader batchowy nie jest wdrożony w chmurze.** Jego idempotentność stoi na atomowej
+  zmianie nazwy katalogu, której nie ma na GCS. Wersja chmurowa: load job + `MERGE`.
+- **Pamięć powtórek jest per instancja.** Przy kilku instancjach Cloud Run ostatnią
+  gwarancją jest widok `events_deduplicated`, nie tabela.
+- **`future_timestamp` jest względny.** Plik wygenerowany dziś i zwalidowany za dobę nie
+  zawiera już części tych błędów — demo i testy podają czas odniesienia jawnie.
 
 ## Struktura repozytorium
 
 | Ścieżka | Do czego służy |
 | --- | --- |
-| `packages/dq-contracts/` | Kontrakt danych: modele pydantic, mapowanie błędów na kwarantannę, generowanie schematów BigQuery. Jedyne źródło prawdy, wersjonowane wg SemVer. |
-| `packages/dq-datagen/` | Generator syntetycznych zdarzeń z kontrolowanym wstrzykiwaniem błędów. |
-| `apps/pipeline/` | Walidator wspólny dla wszystkich etapów, sink, usługa ingest (FastAPI), publisher, redrive, raport DuckDB. |
-| `Dockerfile`, `compose.yaml` | Obraz usługi ingest (ten sam lokalnie i na Cloud Run) oraz lokalne środowisko z emulatorem Pub/Sub. |
-| `scripts/` | Scenariusze end-to-end, np. `local_stream.py` uruchamiany przez `make local-stream`. |
-| `infra/terraform/` | Pub/Sub, BigQuery, Cloud Run, IAM. Schematy tabel generowane z modeli pydantic, nie przepisywane ręcznie. |
-| `tests/` | Test pozytywny i negatywny dla każdej reguły walidacji. |
-| `docs/adr/` | Decyzje architektoniczne i warianty odrzucone. |
+| `packages/dq-contracts/` | Kontrakt: modele pydantic, mapowanie błędów na kwarantannę, schematy BigQuery. Bez zależności od GCP, wersjonowany wg SemVer. |
+| `packages/dq-datagen/` | Generator zdarzeń z katalogiem błędów i odpowiedzią wzorcową. Narzędzie deweloperskie — nie trafia do obrazu. |
+| `apps/pipeline/` | Walidator wspólny dla wszystkich etapów, sinki (JSONL, BigQuery), usługa ingest, publisher, redrive, loader batchowy, raport DuckDB. |
+| `infra/terraform/` | Projekt GCP, Pub/Sub, BigQuery, Cloud Run, IAM; `schemas/` generowane przez `make schemas`. |
+| `scripts/` | Scenariusze end-to-end (`local_stream.py`, `batch_local.py`) i benchmark. |
+| `Dockerfile`, `compose.yaml` | Obraz pipeline'u (ten sam lokalnie i na Cloud Run) i lokalne środowisko z emulatorem. |
+| `tests/` | Testy kontraktu, generatora, pipeline'u i spójności nazw z Terraformem. |
+| `docs/adr/` | Decyzje architektoniczne z wariantami odrzuconymi. |
+
+## Historia etapów
+
+Projekt powstawał etapami; każdy kończył się jedną działającą komendą.
+
+| Etap | Co powstało | Komenda | Pull requesty |
+| --- | --- | --- | --- |
+| 1 | workspace uv, ruff, mypy strict, pytest, Makefile, CI | `make check` | commit startowy |
+| 2 | kontrakt pydantic, mapowanie na kwarantannę, 81 testów | `make test` | #4 |
+| 3 | generator z katalogiem błędów i odpowiedzią wzorcową | `make gen` | #6, #7, #8 |
+| 4 | walidator, usługa ingest, emulator Pub/Sub, redrive, raport DuckDB | `make local-stream` | #10–#13 |
+| 5 | powtórka vs duplikat, idempotentny loader, benchmark | `make batch-local`, `make bench` | #15–#18 |
+| 6 | schematy z modeli, sink BigQuery, Terraform | `make tf-validate` | #20–#23 |
+| 7 | ADR 0002–0006, ta dokumentacja | — | #25, #26 |
 
 ## Konwencje
 
-- Kod, nazwy, commity i opis repozytorium po angielsku.
-- Komentarze, docstringi i dokumentacja po polsku.
-- Każda zmiana przez branch i pull request, CI sprawdza lint, typy i testy.
+- Kod, nazwy, commity i opis repozytorium po angielsku; komentarze, docstringi i dokumentacja
+  po polsku.
+- Każda zmiana przez branch i pull request; CI uruchamia lint, typy, testy, streaming, batch
+  i walidację Terraforma.
 
 ## Licencja
 

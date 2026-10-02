@@ -85,7 +85,8 @@ tabeli ręcznie.
 
 Etapy numerujemy od 1. Realizacja idzie w tej kolejności, każdy etap kończy się działającą
 komendą — jeśli czegoś nie da się uruchomić jedną komendą, etap nie jest zamknięty.
-Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy prac".
+Wszystkie etapy są zamknięte. README jest teraz dokumentacją produktu; historia etapów
+to tabela na jego końcu, a uzasadnienia decyzji żyją w `docs/adr/0001-0006`.
 
 1. **Etap 1 — szkielet** (gotowy): uv workspace, ruff, mypy strict, pytest, Makefile, CI.
 2. **Etap 2 — modele pydantic + testy** (gotowy): `dq_contracts`, każda reguła walidacji ma
@@ -98,7 +99,17 @@ Pełny opis każdego etapu wraz z uzasadnieniem jest w README, sekcja „Etapy p
    `dq-batch` z idempotentnością pliku i wiersza, `make batch-local` (w CI), `make bench`.
 6. **Etap 6 — Terraform** (gotowy): `dq_contracts.bigquery` + `make schemas`, `BigQuerySink`
    (`DQ_SINK=bigquery`), `infra/terraform/` z projektem GCP, job CI `terraform`.
-7. **Etap 7 — README**: pełna dokumentacja produktowa.
+7. **Etap 7 — README** (gotowy): README przebudowane pod czytelnika gotowego projektu,
+   ADR 0002–0006, szacunek kosztów z cennika Google z 2026-10-02.
+
+### Co zostaje otwarte (świadomie, opisane w README → „Ograniczenia")
+
+- `terraform apply` / demo na GCP - decyzja właściciela repo, nie dług.
+- Loader batchowy w chmurze: load job + `MERGE` zamiast `rename` (ADR 0005).
+- Storage Write API zamiast `insertAll` - kandydat do zmiany (ADR 0004), dotyczy tylko `bq.py`.
+- Przejście TestClient na `httpx2` - czeka na decyzję właściciela.
+- Przy zmianie liczb w README (testy, benchmark, koszty) aktualizuj też ADR 0006 i tabelę
+  kosztów - liczby są powtórzone świadomie, żeby README dało się czytać bez ADR-ów.
 
 ### Topologia wdrożenia (docelowa, nieuruchomiona)
 
