@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # .PHONY = te nazwy nie są plikami na dysku. Gdyby w repo pojawił się plik
 # o nazwie `test`, make uznałby cel za aktualny i nie zrobiłby nic.
-.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down batch-local clean
+.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down batch-local bench clean
 
 # Help generuje się sam z komentarzy `## ...` przy celach. Dzięki temu nie
 # istnieje druga, ręcznie utrzymywana lista celów, która rozjechałaby się
@@ -113,6 +113,14 @@ BATCH_N ?= 10000
 batch-local: ## Batch end-to-end: idempotentne loady NDJSON sprawdzone wyrocznią
 	rm -rf data/batch
 	BATCH_N=$(BATCH_N) uv run python scripts/batch_local.py
+
+# Benchmark walidacji: model_validate_json vs TypeAdapter vs model_validate vs
+# model_construct na tym samym zbiorze. Wynik zależy od maszyny - liczy się proporcja
+# między wariantami, nie wartości bezwzględne. Nie idzie do CI: współdzielony runner
+# dawałby losowe czasy, a pomiar bez stabilnego środowiska jest szumem.
+BENCH_N ?= 100000
+bench: ## Benchmark walidacji na BENCH_N rekordach (domyślnie 100 tys.)
+	uv run python scripts/bench.py --count $(BENCH_N)
 
 # -prune zatrzymuje schodzenie w głąb usuwanego katalogu, a `+` grupuje ścieżki
 # w jedno wywołanie rm zamiast jednego wywołania na każdy katalog.
