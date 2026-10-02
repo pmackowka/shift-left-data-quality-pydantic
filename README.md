@@ -3,9 +3,10 @@
 Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
 pydantic pilnuje dwóch pipeline'ów naraz — streamingowego i batchowego — na Google Cloud.
 
-> **Status: projekt w budowie.** Gotowe etapy 1–4 z 7: szkielet narzędzi, kontrakt danych,
-> generator danych z wstrzykiwaniem błędów i streaming end-to-end na emulatorze Pub/Sub
-> (182 testy, 100% pokrycia, streaming sprawdzany w CI).
+> **Status: projekt w budowie.** Gotowe etapy 1–5 z 7: szkielet narzędzi, kontrakt danych,
+> generator danych z wstrzykiwaniem błędów, streaming end-to-end na emulatorze Pub/Sub
+> i idempotentny batch z benchmarkiem walidacji (198 testów, 100% pokrycia, streaming
+> i batch sprawdzane w CI).
 > Plan wszystkich etapów znajdziesz niżej, w sekcji [Etapy prac](#etapy-prac).
 
 ## Dlaczego shift-left
@@ -22,6 +23,8 @@ make setup   # instaluje Pythona 3.12, tworzy .venv, synchronizuje workspace uv
 make check   # ruff + mypy strict + pytest — dokładnie ta sama bramka, którą odpala CI
 make gen            # 1000 zdarzeń, 20% celowo zepsutych, do data/events.jsonl
 make local-stream   # streaming end-to-end na emulatorze Pub/Sub (wymaga Dockera)
+make batch-local    # idempotentny batch: load, ten sam plik ponownie, plik nakładający się
+make bench          # koszt walidacji na 100 tys. rekordów
 ```
 
 Pełna lista komend: `make help`.
@@ -142,7 +145,7 @@ działanie potwierdziłby dopiero prawdziwy Pub/Sub.
 
 **Sprawdzisz:** `make local-stream`
 
-### Etap 5 — batch lokalnie
+### Etap 5 — batch lokalnie ✅
 
 **Co robimy:** przetwarzanie całego pliku naraz, raport z przebiegu (ile rekordów przeszło,
 ile wylądowało w kwarantannie, rozkład powodów odrzucenia), idempotentność (ponowne wgranie
@@ -151,6 +154,78 @@ tego samego pliku nie duplikuje wierszy) oraz benchmark na 100 tys. rekordów.
 **Co to dodaje:** to, czego nie widać w streamingu — koszt walidacji w liczbach i zestawienie
 `model_validate` z `model_construct` oraz `TypeAdapter`. Odpowiada na pytanie, kiedy pominięcie
 walidacji jest uzasadnione, a kiedy jest po prostu oszczędzaniem na hamulcach.
+
+**Powtórka to nie duplikat.** Przy gwarancji „co najmniej raz" ten sam rekord przychodzi
+drugi raz z powodów transportowych: Pub/Sub ponawia dostarczenie, redrive publikuje
+ponownie, ktoś wgrywa ten sam plik. Pipeline pamięta odcisk treści każdej przyjętej
+transakcji (BLAKE2b z kanonicznego JSON-a po walidacji) i rozróżnia:
+
+| Ten sam `transaction_id`… | Werdykt | Zapis |
+| --- | --- | --- |
+| …z identyczną treścią | powtórka | brak — rekord już jest |
+| …z inną treścią | duplikat | kwarantanna `duplicate_transaction` |
+
+Bez tego rozróżnienia każde ponowienie lądowało w kwarantannie i raport jakości rósł od
+samego transportu. Reguła działa tak samo w streamingu i w batchu.
+
+**Idempotentność na dwóch poziomach:**
+
+1. **Plik** — load identyfikuje SHA-256 treści, nie nazwa. Wynik powstaje w katalogu
+   roboczym i trafia na miejsce jednym `os.replace`, a manifest zapisywany jest jako
+   ostatni. Ten sam plik drugi raz to no-op; load przerwany w połowie nie zostawia
+   połowy danych.
+2. **Wiersz** — pamięć transakcji zasilana z wcześniejszych loadów rozpoznaje wiersze,
+   które już przyszły w innym pliku. To lokalny odpowiednik `MERGE ... ON transaction_id`
+   w BigQuery.
+
+```
+$ make batch-local
+dq-batch: a.jsonl -> load 494d2c05afdf428f: loaded
+  lines 10000  accepted 9000  replayed 0  quarantined 1000
+dq-batch: a.jsonl -> load 494d2c05afdf428f: skipped
+dq-batch: b.jsonl -> load ff07c124aad6c257: loaded
+  lines 3001  accepted 1000  replayed 2000  quarantined 1
+OK   load 1 accepted: 9000
+OK   load 2 is a no-op: skipped
+OK   load 3 accepted only new: 1000
+OK   load 3 replays skipped: 2000
+OK   load 3 conflict quarantined: {'duplicate_transaction': 1}
+OK   total events: 10000
+OK   no duplicate rows: 10000
+```
+
+**Benchmark** (`make bench`; MacBook arm64, Python 3.12, pydantic 2.13, 100 tys.
+poprawnych rekordów, najlepszy z 3 przebiegów; ostatnia kolumna liczy celowo zepsute
+rekordy przepuszczone z próbki 10 tys. z 10% błędów):
+
+| Wariant | µs / rekord | Rekordy / s | Przyjęte poprawne | Przepuszczone zepsute |
+| --- | ---: | ---: | ---: | ---: |
+| `json.loads` (sam parser, bez modelu) | 2,2 | 459 tys. | — | — |
+| `model_validate_json` (ścieżka produkcyjna) | 6,5 | 153 tys. | 100 000 | 125 |
+| `TypeAdapter.validate_json` | 6,5 | 153 tys. | 100 000 | 125 |
+| `TypeAdapter(list[...])` — cała partia naraz | 6,9 | 145 tys. | 100 000 | 0¹ |
+| `json.loads` + `model_validate` (strict) | 4,7 | 215 tys. | 0² | 0 |
+| `json.loads` + `model_validate(strict=False)` | 8,5 | 118 tys. | 100 000 | 250 |
+| `json.loads` + `model_construct` | 3,4 | 295 tys. | 100 000 | 1000 |
+
+¹ Jeden zły rekord unieważnia całą partię — odrzucone zostają też poprawne.
+² Strict w ścieżce Pythona odrzuca tekst w polach `Decimal`, `UUID` i `datetime`, czyli
+każdy rekord sparsowany z JSON-a. Dlatego pipeline używa `model_validate_json`.
+
+Co z tego wynika:
+
+- **Walidacja kosztuje ok. 4 µs na rekord ponad samo parsowanie** — 0,65 s na 100 tys.
+  zdarzeń. Przy milionie zdarzeń dziennie to kilka sekund CPU na dobę.
+- **`model_construct` oszczędza ok. 3 µs i przepuszcza 100% błędów.** Zostawia przy tym
+  `value` jako `str` zamiast `Decimal`, a pozycje jako surowe słowniki — model ma typy
+  tylko z nazwy. Uzasadnione wyłącznie dla danych zwalidowanych chwilę wcześniej tym
+  samym kontraktem, np. przy odczycie własnej tabeli `events`.
+- **Tryb lax jest wolniejszy od strict i przepuszcza dwa razy więcej.** Koercja kosztuje,
+  a `"2"` zamiast `2` w ilości zostaje po cichu „naprawione".
+- **125 rekordów przepuszczonych przez strict to duplikaty.** Schemat z definicji ich
+  nie widzi — od tego jest pamięć transakcji, a nie model.
+- **Walidacja całej partii naraz nie jest szybsza**, a odbiera możliwość odrzucenia
+  pojedynczego rekordu. Do sortowania na dobre i złe — tylko rekord po rekordzie.
 
 **Sprawdzisz:** `make batch-local` oraz `make bench`
 
@@ -223,11 +298,13 @@ a mieszanie awarii infrastruktury z błędami danych psuje metrykę jakości.
 
 ```mermaid
 flowchart TD
-    FILE[Plik NDJSON<br/>lokalnie lub w GCS] --> LOAD[Loader batchowy]
-    LOAD --> VAL{Walidacja całej partii}
-    VAL -->|poprawne| EVB[(BigQuery: events)]
-    VAL -->|odrzucone| QB[(BigQuery: quarantine)]
-    LOAD --> REP[Raport przebiegu:<br/>liczby, rozkład powodów odrzucenia]
+    FILE[Plik NDJSON<br/>lokalnie lub w GCS] --> SHA{SHA-256 pliku<br/>już załadowany?}
+    SHA -->|tak| SKIP[No-op]
+    SHA -->|nie| VAL{Walidacja rekord po rekordzie<br/>ten sam kontrakt}
+    VAL -->|poprawne, nowe| EVB[(BigQuery: events)]
+    VAL -->|powtórka| DROP[Pominięte]
+    VAL -->|odrzucone, w tym duplikat| QB[(BigQuery: quarantine)]
+    VAL --> REP[Manifest loadu:<br/>liczby, rozkład powodów odrzucenia]
 ```
 
 ## Jak wyglądałoby wdrożenie
