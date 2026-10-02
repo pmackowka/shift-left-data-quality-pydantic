@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from dq_contracts import PipelineStage
+from dq_pipeline.files import read_ndjson
 from dq_pipeline.pubsub import (
     DeadLetter,
     PublishResult,
@@ -18,7 +19,6 @@ from dq_pipeline.pubsub import (
     _parser,
     collect_dead_letters,
     publish_lines,
-    read_ndjson,
     republish,
 )
 from dq_pipeline.sinks import QUARANTINE_FILE, LocalJsonlSink
