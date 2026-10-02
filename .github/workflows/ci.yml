@@ -102,3 +102,27 @@ jobs:
       - name: Container logs on failure
         if: failure()
         run: docker compose logs --no-color
+
+  # Terraform „na sucho": format, init bez backendu, validate. Bez poświadczeń GCP -
+  # nic tu nie łączy się z chmurą poza pobraniem providera z rejestru HashiCorp.
+  # Ta sama wersja Terraforma co w `make tf-validate` (obraz hashicorp/terraform:1.16).
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.16"
+
+      - name: Format
+        run: terraform fmt -check -recursive
+
+      - name: Init without backend
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate

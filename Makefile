@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # .PHONY = te nazwy nie są plikami na dysku. Gdyby w repo pojawił się plik
 # o nazwie `test`, make uznałby cel za aktualny i nie zrobiłby nic.
-.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down batch-local bench schemas clean
+.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down batch-local bench schemas tf-validate destroy clean
 
 # Help generuje się sam z komentarzy `## ...` przy celach. Dzięki temu nie
 # istnieje druga, ręcznie utrzymywana lista celów, która rozjechałaby się
@@ -127,6 +127,28 @@ bench: ## Benchmark walidacji na BENCH_N rekordach (domyślnie 100 tys.)
 # i CI) pada, gdy model zmienił się bez przegenerowania schematu.
 schemas: ## Generuje schematy BigQuery z modeli do infra/terraform/schemas/
 	uv run python -m dq_contracts.bigquery --out infra/terraform/schemas
+
+# Terraform z obrazu Dockera - lokalnie nie jest zainstalowany, a obraz przypina
+# wersję, więc lokalnie i w CI waliduje ta sama binarka. Katalog infra/terraform
+# montowany do kontenera; .terraform/ z pobranym providerem zostaje na dysku (w .gitignore).
+# --user: pliki tworzone w kontenerze należą do użytkownika hosta, nie do roota.
+TF_IMAGE := hashicorp/terraform:1.16
+TF := docker run --rm --user $$(id -u):$$(id -g) -e HOME=/tmp -v $(CURDIR)/infra/terraform:/tf -w /tf $(TF_IMAGE)
+
+# Walidacja bez konta GCP: format, init bez backendu (nie łączy się z GCS), validate
+# (składnia, typy, referencje między zasobami). Nie sprawdza uprawnień ani tego, czy
+# zasoby dałoby się utworzyć - to wiedziałby dopiero `plan` z poświadczeniami.
+tf-validate: ## Walidacja Terraforma bez konta GCP (fmt, init -backend=false, validate)
+	$(TF) fmt -check -recursive
+	$(TF) init -backend=false -input=false
+	$(TF) validate
+
+# Teardown: usuwa projekt GCP razem z zawartością (deletion_policy = "DELETE").
+# W tym repozytorium nigdy nie uruchomiony - infrastruktura nie istnieje. Wymaga ADC
+# (`gcloud auth application-default login`) i terraform.tfvars obok kodu.
+destroy: ## Usuwa całą infrastrukturę demo (wymaga poświadczeń GCP; tu nieuruchamiane)
+	docker run --rm -it -v $(CURDIR)/infra/terraform:/tf -w /tf \
+		-v $(HOME)/.config/gcloud:/root/.config/gcloud:ro $(TF_IMAGE) destroy -var-file=terraform.tfvars
 
 # -prune zatrzymuje schodzenie w głąb usuwanego katalogu, a `+` grupuje ścieżki
 # w jedno wywołanie rm zamiast jednego wywołania na każdy katalog.
