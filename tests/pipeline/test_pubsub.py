@@ -92,6 +92,22 @@ def test_published_bytes_are_the_original_line(tmp_path: Path, valid_line: bytes
     assert topic.sent[0][0] == original
 
 
+def test_validating_producer_does_not_publish_the_same_record_twice(
+    tmp_path: Path, valid_line: bytes
+) -> None:
+    topic = FakeTopic()
+
+    summary = publish_lines(
+        [valid_line, valid_line],
+        topic,
+        validator=RecordValidator(PipelineStage.SOURCE),
+        sink=LocalJsonlSink(tmp_path),
+    )
+
+    assert (summary.published, summary.replays_skipped) == (1, 1)
+    assert len(topic.sent) == 1
+
+
 def test_legacy_producer_publishes_everything(tmp_path: Path, valid_line: bytes) -> None:
     topic = FakeTopic()
 

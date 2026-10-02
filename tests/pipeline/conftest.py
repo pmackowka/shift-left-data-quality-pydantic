@@ -5,7 +5,9 @@ utrzymywać własnych przykładów złych danych. Gdy kontrakt dostanie nową re
 generator dostanie nowy błąd, a te testy pokryją go bez zmian.
 """
 
+import json
 import random
+import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -21,3 +23,11 @@ def valid_line() -> bytes:
         random.Random(1), transaction_id="T-PIPE-000001", reference_time=REFERENCE_TIME
     )
     return event.model_dump_json().encode()
+
+
+@pytest.fixture
+def conflicting_line(valid_line: bytes) -> bytes:
+    """Ten sam `transaction_id`, inna treść (nowe `event_id`) - prawdziwy duplikat, nie powtórka."""
+    payload = json.loads(valid_line)
+    payload["event_id"] = str(uuid.UUID(int=1, version=4))
+    return json.dumps(payload).encode()
