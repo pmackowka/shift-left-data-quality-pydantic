@@ -47,6 +47,8 @@ report = ["duckdb>=1.5"]
 dq-ingest = "dq_pipeline.ingest:main"
 dq-pubsub = "dq_pipeline.pubsub:main"
 dq-report = "dq_pipeline.report:main"
+# Loader batchowy - na GCP polecenie startowe Cloud Run Job na tym samym obrazie co ingest.
+dq-batch = "dq_pipeline.batch:main"
 
 [build-system]
 requires = ["hatchling"]

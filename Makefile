@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # .PHONY = te nazwy nie są plikami na dysku. Gdyby w repo pojawił się plik
 # o nazwie `test`, make uznałby cel za aktualny i nie zrobiłby nic.
-.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down clean
+.PHONY: help setup lint format typecheck test check gen image local-stream local-stream-down batch-local clean
 
 # Help generuje się sam z komentarzy `## ...` przy celach. Dzięki temu nie
 # istnieje druga, ręcznie utrzymywana lista celów, która rozjechałaby się
@@ -105,6 +105,14 @@ local-stream: ## Streaming end-to-end na emulatorze Pub/Sub (Docker), sprawdzony
 
 local-stream-down: ## Zatrzymuje i usuwa kontenery z make local-stream
 	docker compose down --volumes --remove-orphans
+
+# Batch od zera: pusty katalog wyników, trzy loady (pierwszy, ten sam plik ponownie,
+# plik nakładający się) i porównanie z odpowiedzią wzorcową generatora. Bez Dockera -
+# loader czyta i pisze lokalne pliki. BATCH_N zmienia rozmiar pierwszego pliku.
+BATCH_N ?= 10000
+batch-local: ## Batch end-to-end: idempotentne loady NDJSON sprawdzone wyrocznią
+	rm -rf data/batch
+	BATCH_N=$(BATCH_N) uv run python scripts/batch_local.py
 
 # -prune zatrzymuje schodzenie w głąb usuwanego katalogu, a `+` grupuje ścieżki
 # w jedno wywołanie rm zamiast jednego wywołania na każdy katalog.
