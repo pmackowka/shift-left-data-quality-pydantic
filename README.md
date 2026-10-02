@@ -3,10 +3,10 @@
 Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
 pydantic pilnuje dwóch pipeline'ów naraz — streamingowego i batchowego — na Google Cloud.
 
-> **Status: projekt w budowie.** Gotowe etapy 1–5 z 7: szkielet narzędzi, kontrakt danych,
-> generator danych z wstrzykiwaniem błędów, streaming end-to-end na emulatorze Pub/Sub
-> i idempotentny batch z benchmarkiem walidacji (198 testów, 100% pokrycia, streaming
-> i batch sprawdzane w CI).
+> **Status: projekt w budowie.** Gotowe etapy 1–6 z 7: kontrakt danych, generator z wstrzykiwaniem
+> błędów, streaming na emulatorze Pub/Sub, idempotentny batch z benchmarkiem i Terraform całej
+> infrastruktury GCP (219 testów, 100% pokrycia; streaming, batch i Terraform sprawdzane w CI).
+> **Demo na GCP: niewykonane** — Terraform jest zwalidowany, ale świadomie nie został uruchomiony.
 > Plan wszystkich etapów znajdziesz niżej, w sekcji [Etapy prac](#etapy-prac).
 
 ## Dlaczego shift-left
@@ -25,6 +25,8 @@ make gen            # 1000 zdarzeń, 20% celowo zepsutych, do data/events.jsonl
 make local-stream   # streaming end-to-end na emulatorze Pub/Sub (wymaga Dockera)
 make batch-local    # idempotentny batch: load, ten sam plik ponownie, plik nakładający się
 make bench          # koszt walidacji na 100 tys. rekordów
+make schemas        # schematy tabel BigQuery z modeli pydantic
+make tf-validate    # walidacja Terraforma bez konta GCP (wymaga Dockera)
 ```
 
 Pełna lista komend: `make help`.
@@ -229,7 +231,7 @@ Co z tego wynika:
 
 **Sprawdzisz:** `make batch-local` oraz `make bench`
 
-### Etap 6 — infrastruktura jako kod
+### Etap 6 — infrastruktura jako kod ✅
 
 **Co robimy:** Terraform opisujący komplet zasobów: projekt GCP, włączenie potrzebnych API,
 tematy i subskrypcje Pub/Sub, temat dead-letter, dataset i tabele BigQuery, usługa Cloud Run,
@@ -241,6 +243,30 @@ przestaje być czymś, co ktoś kiedyś wyklikał w konsoli. Infrastruktura jest
 przeczytania i zwalidowania, nie uruchomioną chmurą**: `terraform apply` świadomie nie zostaje
 wykonany, więc punkt „demo na GCP" pozostaje niezaznaczony. Kod ma komentarze wyjaśniające
 krok po kroku, co zrobić, żeby go odpalić.
+
+**Jak to działa:**
+
+- **Schematy z modeli.** `make schemas` tłumaczy modele pydantic na schematy BigQuery:
+  `Decimal(max_digits=12, decimal_places=2)` → `NUMERIC(12, 2)`, model zagnieżdżony →
+  `RECORD`, lista → `REPEATED`, enum → `STRING` z dozwolonymi wartościami w opisie kolumny.
+  Nieznany typ to błąd, nie ciche `STRING`. Test w `make check` pada, gdy model zmieni się
+  bez przegenerowania schematu — rozjazd wychodzi w pull requeście, nie na produkcji.
+- **Sink BigQuery.** Ta sama usługa ingest pisze lokalnie do JSONL, a na Cloud Run do BigQuery
+  — przełącza ją wyłącznie `DQ_SINK`. Deduplikacja ma trzy warstwy: pamięć powtórek w
+  instancji, `insertId` w BigQuery (okno ok. minuty) i widok `events_deduplicated`, z którego
+  czytają raporty.
+- **Terraform** (`infra/terraform/`): projekt GCP, API, Artifact Registry, Pub/Sub z push
+  przez OIDC i dead-letter, BigQuery z tabelami partycjonowanymi po czasie zdarzenia, usługa
+  Cloud Run, dwa konta usług z minimalnymi uprawnieniami. Nazwy zasobów pilnuje test
+  względem kodu (`Topology`, schematy).
+- **Walidacja bez konta.** `make tf-validate` i job CI `terraform`: `fmt -check`,
+  `init -backend=false`, `validate`. Sprawdza składnię, typy i referencje; nie sprawdza
+  uprawnień ani quoty — to wiedziałby dopiero `plan` z poświadczeniami.
+
+**Świadomie poza zakresem: loader batchowy w chmurze.** Lokalny loader opiera idempotentność
+na atomowej zmianie nazwy katalogu, a na zamontowanym buckecie GCS taka operacja nie jest
+atomowa. Wersja chmurowa to inny mechanizm: load job BigQuery do tabeli tymczasowej i `MERGE`
+po `transaction_id`. Logika walidacji jest gotowa i wspólna, brakuje tylko tego zapisu.
 
 **Sprawdzisz:** `make tf-validate` (walidacja bez konta GCP, przez obraz Dockera)
 
@@ -323,12 +349,12 @@ Punkt „demo na GCP" w Definition of Done pozostaje niezaznaczony i tak jest to
 | Usługa ingest | Cloud Run (region `europe-central2`) | Skalowanie do zera: brak ruchu = brak kosztu. |
 | Obraz kontenera | Artifact Registry | Budowany lokalnie (`docker buildx --platform linux/amd64`) i wypychany do rejestru. |
 | Publisher | uruchamiany z laptopa przez ADC, docelowo Cloud Run Job | W demo to narzędzie, nie element produkcyjny. |
-| Loader batchowy | Cloud Run Job wyzwalany ręcznie lub z Cloud Scheduler | Ten sam obraz co ingest, inny punkt wejścia. |
+| Loader batchowy | docelowo Cloud Run Job (`dq-batch`) na tym samym obrazie | **Nie ma w Terraformie.** Lokalna idempotentność stoi na atomowym `rename`, którego nie ma na GCS; w chmurze potrzebny load job + `MERGE`. |
 | Kolejka | Pub/Sub: temat, subskrypcja push, temat dead-letter | Subskrypcja push uwierzytelnia się do Cloud Run tokenem OIDC. |
-| Dane | BigQuery: tabele `events` i `quarantine` | Partycjonowane po dacie zdarzenia, klastrowane po identyfikatorze transakcji. |
+| Dane | BigQuery: tabele `events` i `quarantine`, widok `events_deduplicated` | `events` partycjonowane po dacie zdarzenia i klastrowane po `transaction_id`; `quarantine` po dacie odrzucenia, klastrowane po etapie i powodzie. Raporty czytają widok. |
 | Schematy tabel | `infra/terraform/schemas/*.json`, generowane z modeli | Terraform czyta je przez `file()`, CI pilnuje rozjazdu. |
 | Stan Terraforma | bucket GCS z wersjonowaniem | W repo backend jest lokalny, bo projekt nie istnieje; plik stanu nigdy nie trafia do gita. |
-| Tożsamość | konto usługi z minimalnym IAM, lokalnie ADC | Zero kluczy JSON — ani w repo, ani na dysku. |
+| Tożsamość | dwa konta usług: `ingest-runtime` (zapis do datasetu) i `pubsub-push` (wywołanie usługi), lokalnie ADC | Zero kluczy JSON — ani w repo, ani na dysku. Agent Pub/Sub dostaje role, bez których dead-letter po cichu nie działa. |
 
 ### Droga artefaktu
 
@@ -345,15 +371,19 @@ flowchart LR
     end
     SRC --> BUILD
     BUILD -->|docker push| AR
-    AR -->|gcloud run deploy| CR
+    AR -->|terraform apply<br/>deploy_service = true| CR
     SRC -->|terraform apply| REST
-    SRC -->|terraform apply| CR
 ```
 
 Kolejność ma znaczenie i wynika z zależności: obraz musi istnieć w rejestrze, zanim Terraform
 utworzy usługę Cloud Run, bo definicja usługi wskazuje na konkretny tag obrazu. Dlatego
-pierwszy `apply` robi się dwuetapowo — najpierw rejestr i reszta zasobów, potem push obrazu,
-na końcu usługa. Komentarze w `infra/terraform/` prowadzą przez to krok po kroku.
+pierwszy `apply` robi się dwuetapowo, sterowany zmienną `deploy_service`:
+
+1. `terraform apply -var deploy_service=false` — projekt, API, rejestr, Pub/Sub, BigQuery, IAM.
+2. `docker buildx build --platform linux/amd64 -t <image_repository>/dq-pipeline:<sha> --push .`
+3. `terraform apply -var image_tag=<sha>` — usługa Cloud Run i subskrypcja push do niej.
+
+Komentarze w `infra/terraform/` prowadzą przez to krok po kroku.
 
 ### Co trzeba by zrobić ręcznie
 
