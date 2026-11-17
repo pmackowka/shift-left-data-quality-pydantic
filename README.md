@@ -1,4 +1,4 @@
-# Shift-left data quality z pydantic
+# shift-left-data-quality-pydantic
 
 [![CI](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml/badge.svg)](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml)
 
