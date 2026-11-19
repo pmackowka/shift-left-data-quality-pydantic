@@ -112,6 +112,8 @@ Lokalnie i w CI miejsce Pub/Sub zajmuje emulator w Dockerze, a miejsce BigQuery 
 z raportem w DuckDB ([ADR 0001](docs/adr/0001-local-sink-instead-of-bigquery-emulator.md)).
 Usługa ingest to ten sam obraz Dockera; sink przełącza zmienna `DQ_SINK`.
 
+Diagram sekwencji UML całego przepływu: [`uml-diagram.md`](uml-diagram.md).
+
 ## Uruchomienie od zera
 
 Wymagania: macOS albo Linux, `git`, `make`, [uv](https://docs.astral.sh/uv/) (sam pobierze
