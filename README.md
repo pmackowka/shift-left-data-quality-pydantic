@@ -62,22 +62,7 @@ fakcie, pipeline odrzuca pojedynczy rekord z konkretnym powodem — a reszta pł
 
 Ścieżka streamingowa:
 
-```mermaid
-flowchart TD
-    GEN[Generator zdarzeń] --> PUB[Publisher]
-    PUB --> V1{Walidacja u źródła<br/>kontrakt pydantic}
-    V1 -->|rekord poprawny| TOPIC[(Pub/Sub topic<br/>purchase-events)]
-    V1 -->|rekord odrzucony| QUAR[(BigQuery: quarantine<br/>rekord + powód)]
-    TOPIC --> SUB[Subskrypcja push]
-    SUB -->|HTTP POST z tokenem OIDC| RUN[Cloud Run: usługa ingest]
-    RUN --> V2{Walidacja po odbiorze<br/>ten sam kontrakt}
-    V2 -->|rekord poprawny| EV[(BigQuery: events)]
-    V2 -->|powtórka| ACK[Ack bez zapisu]
-    V2 -->|błąd walidacji| QUAR
-    RUN -->|awaria zapisu: HTTP 5xx| SUB
-    SUB -->|5 nieudanych prób| DLQ[(Pub/Sub: dead-letter topic)]
-    DLQ -->|redrive po usunięciu awarii| TOPIC
-```
+Diagram sekwencji UML: [`uml-diagram.md`](uml-diagram.md) — walidacja, kwarantanna, powtórki, ponowienia i dead-letter.
 
 Ścieżka batchowa — ten sam kontrakt, inny transport:
 
@@ -111,8 +96,6 @@ jakości danych.
 Lokalnie i w CI miejsce Pub/Sub zajmuje emulator w Dockerze, a miejsce BigQuery — pliki JSONL
 z raportem w DuckDB ([ADR 0001](docs/adr/0001-local-sink-instead-of-bigquery-emulator.md)).
 Usługa ingest to ten sam obraz Dockera; sink przełącza zmienna `DQ_SINK`.
-
-Diagram sekwencji UML całego przepływu: [`uml-diagram.md`](uml-diagram.md).
 
 ## Uruchomienie od zera
 
