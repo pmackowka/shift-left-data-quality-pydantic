@@ -1,6 +1,6 @@
 # shift-left-data-quality-pydantic
 
-[![CI](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml/badge.svg)](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml)
+[![CI](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml/badge.svg)](https://github.com/pmackowka/shift-left-data-quality-pydantic/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/github/license/pmackowka/shift-left-data-quality-pydantic)](LICENSE)
 
 Walidacja zdarzeń ecommerce **zanim** trafią do hurtowni. Jeden wersjonowany kontrakt
 pydantic pilnuje dwóch pipeline'ów naraz — streamingowego (Pub/Sub → Cloud Run → BigQuery)
