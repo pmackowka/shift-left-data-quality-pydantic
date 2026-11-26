@@ -198,10 +198,12 @@ w generatorze:
 
 ## Konwencje
 
-- **Kod, nazwy, commity, opis repozytorium i topics po angielsku. Komentarze, docstringi,
+- **Kod, nazwy, opis repozytorium i topics po angielsku. Komentarze, docstringi,
   README i cała dokumentacja po polsku.** README jest wyłącznie polskie — to świadoma decyzja
   właściciela repo, nie przeoczenie.
-- Commity w konwencji Conventional Commits, tytuł do 72 znaków.
+- Commity i PR-y: prefiks Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`,
+  `ci:`, `build:`, `chore:`, `perf:`, `revert:`) + opis po polsku w trybie rozkazującym, ≤ 72 znaki
+  (od 2026-11-26; wcześniejsza historia po angielsku).
 - Nigdy nie commituj na `main`. Każda zmiana idzie przez branch (`feat/`, `fix/`, `chore/`,
   `docs/` + kebab-case) i pull request przez `gh pr create`, z opisem: co się zmienia, dlaczego,
   jak zweryfikować. Przed otwarciem PR uruchom `make check` i wklej wynik do opisu.
